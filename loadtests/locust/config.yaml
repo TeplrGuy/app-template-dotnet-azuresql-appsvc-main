@@ -1,0 +1,33 @@
+# Azure Load Testing Configuration for Locust Test
+# Test Name: MCP-VS-LT-example
+# Resource: lt-cntso-ecgs
+
+version: v0.1
+testId: mcp-vs-lt-example
+displayName: MCP-VS-LT-example
+description: Locust load test for Contoso University Courses API - 5 VUs, 300 RPM, 3 minutes
+
+testPlan: locustfile.py
+
+engineInstances: 1
+
+configurationFiles: []
+
+failureCriteria: []
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60
+
+# Load configuration
+# Note: Azure Load Testing Locust tests use these environment variables
+# to control the load parameters
+env:
+  - name: LOCUST_USERS
+    value: "5"
+  - name: LOCUST_SPAWN_RATE
+    value: "5"
+  - name: LOCUST_RUN_TIME
+    value: "3m"
+  - name: LOCUST_HOST
+    value: "https://cntso-ecgs-api.azurewebsites.net"

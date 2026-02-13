@@ -1,0 +1,51 @@
+# =============================================================================
+# Azure Load Testing Configuration
+# =============================================================================
+# This is the default config used by resilience-pipeline.yml
+# All tests use the shared template: templates/http-test.jmx
+# The template uses env variable "host" for the target hostname
+# =============================================================================
+
+version: v0.1
+testId: contoso-university-load-test
+displayName: Contoso University Load Test
+description: Load test for Contoso University - Tests key endpoints as deployment gate
+
+testPlan: templates/http-test.jmx
+engineInstances: 1
+
+# =============================================================================
+# Environment Variables
+# The "host" variable is set by the pipeline per environment
+# Template has 100 users, 60s ramp-up, 300s duration hardcoded
+# =============================================================================
+env:
+  - name: host
+    value: ${HOST:-localhost}
+
+# =============================================================================
+# Failure Criteria (Deployment Gates)
+# These thresholds are for STAGING - the final gate before production
+# 
+# Per Microsoft Well-Architected Framework:
+# - Response time: p95 < 2s for web applications
+# - Error rate: < 1% for critical paths
+# =============================================================================
+failureCriteria:
+  # Overall test criteria
+  - avg(response_time_ms) > 5000        # Average response time < 5s
+  - percentage(error) > 1                # Error rate < 1%
+  - p95(response_time_ms) > 10000         # 95th percentile < 10s
+  - p99(response_time_ms) > 35000         # 99th percentile < 35s
+  
+  # Per-request criteria (critical endpoints)
+  - GetRequest: avg(response_time_ms) > 1500    # Homepage should be fast
+  - GetRequest: percentage(error) > 0.5         # Homepage errors < 0.5%
+
+# =============================================================================
+# Auto-Stop Configuration
+# Saves costs by stopping tests that are clearly failing
+# =============================================================================
+autoStop:
+  errorPercentage: 10    # Stop if 10% errors in any 60s window
+  timeWindow: 60

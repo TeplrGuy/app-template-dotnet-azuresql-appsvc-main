@@ -1,0 +1,23 @@
+# Stress Test Profile - Run in dedicated performance environment
+# Purpose: Find breaking points and validate auto-scaling
+# Duration: ~10 minutes
+
+profile: stress
+description: Stress test to find system limits
+
+parameters:
+  concurrent_users: 500
+  duration_seconds: 600
+  ramp_up_seconds: 120
+  engine_instances: 3
+
+# More lenient criteria - we expect some degradation
+failureCriteria:
+  - avg(response_time_ms) > 5000
+  - percentage(error) > 10
+
+expectedOutcome:
+  - Identify breaking point
+  - Validate auto-scaling triggers
+  - Understand degradation patterns
+  - No cascading failures

@@ -1,0 +1,204 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "8630285722852711806"
+    }
+  },
+  "parameters": {
+    "agentName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the SRE Agent resource"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus2",
+      "allowedValues": [
+        "swedencentral",
+        "eastus2",
+        "australiaeast",
+        "uksouth"
+      ],
+      "metadata": {
+        "description": "Location for the SRE Agent (limited preview regions: swedencentral, eastus2, australiaeast, uksouth)"
+      }
+    },
+    "accessLevel": {
+      "type": "string",
+      "defaultValue": "High",
+      "allowedValues": [
+        "High",
+        "Low"
+      ],
+      "metadata": {
+        "description": "Access level for the SRE Agent: High = Reader + Contributor, Low = Reader only"
+      }
+    },
+    "agentMode": {
+      "type": "string",
+      "defaultValue": "Review",
+      "allowedValues": [
+        "Review",
+        "Autonomous",
+        "ReadOnly"
+      ],
+      "metadata": {
+        "description": "Agent mode: Review = human approval, Autonomous = auto-remediate, ReadOnly = observe only"
+      }
+    },
+    "appInsightsId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Application Insights instance"
+      }
+    },
+    "appInsightsAppId": {
+      "type": "string",
+      "metadata": {
+        "description": "Application Insights App ID (from properties.AppId)"
+      }
+    },
+    "appInsightsConnectionString": {
+      "type": "string",
+      "metadata": {
+        "description": "Application Insights connection string"
+      }
+    },
+    "logAnalyticsWorkspaceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Log Analytics workspace"
+      }
+    },
+    "webAppId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Web App (frontend)"
+      }
+    },
+    "apiAppId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the API App (backend)"
+      }
+    },
+    "githubRepoUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "GitHub repository URL for code integration (e.g., https://github.com/owner/repo)"
+      }
+    },
+    "existingManagedIdentityId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional: Resource ID of an existing user-assigned managed identity. If empty, a new one is created."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Tags to apply to the SRE Agent resources"
+      }
+    }
+  },
+  "variables": {
+    "shouldCreateManagedIdentity": "[empty(parameters('existingManagedIdentityId'))]",
+    "uniqueSuffix": "[uniqueString(resourceGroup().id, parameters('agentName'))]",
+    "userAssignedIdentityName": "[format('{0}-identity-{1}', parameters('agentName'), variables('uniqueSuffix'))]",
+    "managedIdentityId": "[if(variables('shouldCreateManagedIdentity'), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName')), parameters('existingManagedIdentityId'))]"
+  },
+  "resources": [
+    {
+      "condition": "[variables('shouldCreateManagedIdentity')]",
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2024-11-30",
+      "name": "[variables('userAssignedIdentityName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "type": "Microsoft.App/agents",
+      "apiVersion": "2025-05-01-preview",
+      "name": "[parameters('agentName')]",
+      "location": "[parameters('location')]",
+      "tags": "[union(parameters('tags'), createObject('purpose', 'sre-automation', 'frontend-app', last(split(parameters('webAppId'), '/')), 'backend-app', last(split(parameters('apiAppId'), '/')), 'app-insights', last(split(parameters('appInsightsId'), '/')), 'log-analytics', last(split(parameters('logAnalyticsWorkspaceId'), '/')), 'github-repo', if(not(empty(parameters('githubRepoUrl'))), parameters('githubRepoUrl'), 'not-configured')))]",
+      "identity": {
+        "type": "SystemAssigned, UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', variables('managedIdentityId'))]": {}
+        }
+      },
+      "properties": {
+        "knowledgeGraphConfiguration": {
+          "identity": "[variables('managedIdentityId')]",
+          "managedResources": [
+            "[parameters('webAppId')]",
+            "[parameters('apiAppId')]"
+          ]
+        },
+        "actionConfiguration": {
+          "accessLevel": "[parameters('accessLevel')]",
+          "identity": "[variables('managedIdentityId')]",
+          "mode": "[parameters('agentMode')]"
+        },
+        "logConfiguration": {
+          "applicationInsightsConfiguration": {
+            "appId": "[parameters('appInsightsAppId')]",
+            "connectionString": "[parameters('appInsightsConnectionString')]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.App/agents/{0}', parameters('agentName'))]",
+      "name": "[guid(resourceId('Microsoft.App/agents', parameters('agentName')), deployer().objectId, 'e79298df-d852-4c6d-84f9-5d13249d1e55')]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', 'e79298df-d852-4c6d-84f9-5d13249d1e55')]",
+        "principalId": "[deployer().objectId]",
+        "principalType": "User"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/agents', parameters('agentName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "sreAgentName": {
+      "type": "string",
+      "value": "[parameters('agentName')]"
+    },
+    "sreAgentId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.App/agents', parameters('agentName'))]"
+    },
+    "sreAgentPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/agents', parameters('agentName')), '2025-05-01-preview', 'full').identity.principalId]"
+    },
+    "userAssignedIdentityId": {
+      "type": "string",
+      "value": "[variables('managedIdentityId')]"
+    },
+    "userAssignedIdentityPrincipalId": {
+      "type": "string",
+      "value": "[if(variables('shouldCreateManagedIdentity'), reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('userAssignedIdentityName')), '2024-11-30').principalId, reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', last(split(parameters('existingManagedIdentityId'), '/'))), '2023-01-31').principalId)]"
+    },
+    "sreAgentPortalUrl": {
+      "type": "string",
+      "value": "[format('https://sre.azure.com/#/agent/{0}', resourceId('Microsoft.App/agents', parameters('agentName')))]"
+    }
+  }
+}

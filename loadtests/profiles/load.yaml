@@ -1,0 +1,24 @@
+# Load Test Profile - Run on QA/Staging before release
+# Purpose: Validate performance SLAs under expected production load
+# Duration: ~5 minutes
+
+profile: load
+description: Standard load test for QA validation
+
+parameters:
+  concurrent_users: 100
+  duration_seconds: 300
+  ramp_up_seconds: 60
+  engine_instances: 1
+
+# Production-like SLA criteria
+failureCriteria:
+  - avg(response_time_ms) > 2000
+  - percentage(error) > 1
+  - p95(response_time_ms) > 3000
+  - p99(response_time_ms) > 5000
+
+expectedOutcome:
+  - Response times within SLA
+  - Error rate below 1%
+  - System stable under sustained load

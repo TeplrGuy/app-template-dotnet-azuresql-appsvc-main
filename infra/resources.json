@@ -1,0 +1,942 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "9902349467682564845"
+    }
+  },
+  "parameters": {
+    "environmentName": {
+      "type": "string"
+    },
+    "location": {
+      "type": "string"
+    },
+    "webServiceName": {
+      "type": "string"
+    },
+    "apiServiceName": {
+      "type": "string"
+    },
+    "sqlAuthMode": {
+      "type": "string",
+      "defaultValue": "aad",
+      "allowedValues": [
+        "sql",
+        "aad"
+      ],
+      "metadata": {
+        "description": "SQL authentication mode: sql = SQL auth with app user, aad = Azure AD only"
+      }
+    },
+    "sqlAdminUsername": {
+      "type": "string",
+      "defaultValue": "sqladmin",
+      "metadata": {
+        "description": "SQL Server admin username (only for SQL auth mode)"
+      }
+    },
+    "sqlAdminPassword": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "SQL Server admin password (only for SQL auth mode)"
+      }
+    },
+    "sqlAppUserPassword": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "SQL App user password (only for SQL auth mode)"
+      }
+    },
+    "sqlAppUser": {
+      "type": "string",
+      "defaultValue": "appUser",
+      "metadata": {
+        "description": "SQL App username for application connections (only for SQL auth mode)"
+      }
+    },
+    "sqlAadAdminName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure AD SQL Admin display name (only for AAD auth mode)"
+      }
+    },
+    "sqlAadAdminObjectId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure AD SQL Admin Object ID (only for AAD auth mode)"
+      }
+    },
+    "sqlConnectionStringKey": {
+      "type": "string",
+      "defaultValue": "AZURE-SQL-CONNECTION-STRING",
+      "metadata": {
+        "description": "Key name for SQL connection string in Key Vault"
+      }
+    },
+    "enableSreAgent": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable Azure SRE Agent for automated incident response"
+      }
+    },
+    "sreAgentMode": {
+      "type": "string",
+      "defaultValue": "Review",
+      "allowedValues": [
+        "Review",
+        "Autonomous",
+        "ReadOnly"
+      ],
+      "metadata": {
+        "description": "SRE Agent mode: Review = human approval required, Autonomous = auto-remediate, ReadOnly = observe only"
+      }
+    },
+    "githubRepoUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "GitHub repository URL for SRE Agent code integration (e.g., https://github.com/owner/repo)"
+      }
+    }
+  },
+  "variables": {
+    "tags": {
+      "environment": "[parameters('environmentName')]",
+      "project": "ContosoUniversity",
+      "azd-env-name": "[parameters('environmentName')]"
+    },
+    "keyVaultName": "[format('kv-{0}', parameters('environmentName'))]",
+    "sqlServerName": "[format('sql-{0}', parameters('environmentName'))]",
+    "sqlDatabaseName": "[format('sqldb-{0}', parameters('environmentName'))]",
+    "appServicePlanName": "[format('plan-{0}', parameters('environmentName'))]",
+    "appInsightsName": "[format('appi-{0}', parameters('environmentName'))]",
+    "logAnalyticsName": "[format('log-{0}', parameters('environmentName'))]",
+    "loadTestingName": "[format('lt-{0}', parameters('environmentName'))]",
+    "sreAgentName": "[format('sre-{0}', parameters('environmentName'))]",
+    "vnetName": "[format('vnet-{0}', parameters('environmentName'))]",
+    "appSubnetName": "snet-app",
+    "privateEndpointSubnetName": "snet-pe",
+    "keyVaultSecretsUserRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
+    "sqlServerFqdn": "[format('{0}{1}', variables('sqlServerName'), environment().suffixes.sqlServerHostname)]",
+    "sqlConnectionStringSql": "[format('Server=tcp:{0},1433;Initial Catalog={1};Persist Security Info=False;User ID={2};Password={3};MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;', variables('sqlServerFqdn'), variables('sqlDatabaseName'), parameters('sqlAppUser'), parameters('sqlAppUserPassword'))]",
+    "sqlConnectionStringAad": "[format('Server=tcp:{0},1433;Initial Catalog={1};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;Authentication=Active Directory Default;', variables('sqlServerFqdn'), variables('sqlDatabaseName'))]",
+    "sreAgentLocation": "eastus2",
+    "readerRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites/slots",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', parameters('webServiceName'), 'staging')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('webServiceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/slots",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', parameters('webServiceName'), 'qa')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('webServiceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.0.0.0/16"
+          ]
+        },
+        "subnets": [
+          {
+            "name": "[variables('appSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.0.1.0/24",
+              "delegations": [
+                {
+                  "name": "Microsoft.Web.serverFarms",
+                  "properties": {
+                    "serviceName": "Microsoft.Web/serverFarms"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "[variables('privateEndpointSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.0.2.0/24",
+              "privateEndpointNetworkPolicies": "Disabled"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[format('privatelink{0}', environment().suffixes.sqlServerHostname)]",
+      "location": "global",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}/{1}', format('privatelink{0}', environment().suffixes.sqlServerHostname), format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink{0}', environment().suffixes.sqlServerHostname))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('logAnalyticsName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "IngestionMode": "LogAnalytics",
+        "publicNetworkAccessForIngestion": "Enabled",
+        "publicNetworkAccessForQuery": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2022-07-01",
+      "name": "[variables('keyVaultName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "tenantId": "[subscription().tenantId]",
+        "enableRbacAuthorization": true,
+        "enabledForDeployment": false,
+        "enabledForDiskEncryption": false,
+        "enabledForTemplateDeployment": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "S1",
+        "tier": "Standard",
+        "capacity": 1
+      },
+      "properties": {
+        "reserved": false
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('webServiceName')]",
+      "location": "[parameters('location')]",
+      "tags": "[union(variables('tags'), createObject('azd-service-name', 'web'))]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "netFrameworkVersion": "v6.0",
+          "alwaysOn": true,
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "appSettings": [
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "ApplicationInsightsAgent_EXTENSION_VERSION",
+              "value": "~3"
+            },
+            {
+              "name": "Api__Address",
+              "value": "[format('https://{0}.azurewebsites.net', parameters('apiServiceName'))]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('apiServiceName')]",
+      "location": "[parameters('location')]",
+      "tags": "[union(variables('tags'), createObject('azd-service-name', 'api'))]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "virtualNetworkSubnetId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('appSubnetName'))]",
+        "siteConfig": {
+          "netFrameworkVersion": "v6.0",
+          "alwaysOn": true,
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "vnetRouteAllEnabled": true,
+          "appSettings": [
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "ApplicationInsightsAgent_EXTENSION_VERSION",
+              "value": "~3"
+            },
+            {
+              "name": "WEBSITE_DNS_SERVER",
+              "value": "168.63.129.16"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/slots",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', parameters('apiServiceName'), 'staging')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "virtualNetworkSubnetId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('appSubnetName'))]",
+        "siteConfig": {
+          "netFrameworkVersion": "v6.0",
+          "alwaysOn": true,
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "vnetRouteAllEnabled": true,
+          "appSettings": [
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "ApplicationInsightsAgent_EXTENSION_VERSION",
+              "value": "~3"
+            },
+            {
+              "name": "WEBSITE_DNS_SERVER",
+              "value": "168.63.129.16"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('apiServiceName'))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/slots",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', parameters('apiServiceName'), 'qa')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "virtualNetworkSubnetId": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('appSubnetName'))]",
+        "siteConfig": {
+          "netFrameworkVersion": "v6.0",
+          "alwaysOn": true,
+          "ftpsState": "Disabled",
+          "minTlsVersion": "1.2",
+          "vnetRouteAllEnabled": true,
+          "appSettings": [
+            {
+              "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+              "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+            },
+            {
+              "name": "ApplicationInsightsAgent_EXTENSION_VERSION",
+              "value": "~3"
+            },
+            {
+              "name": "WEBSITE_DNS_SERVER",
+              "value": "168.63.129.16"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('apiServiceName'))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.KeyVault/vaults/{0}', variables('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'qa'), variables('keyVaultSecretsUserRole'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'qa'), '2022-09-01', 'full').identity.principalId]",
+        "roleDefinitionId": "[variables('keyVaultSecretsUserRole')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'qa')]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/slots/config",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}/{2}', parameters('apiServiceName'), 'qa', 'appsettings')]",
+      "properties": {
+        "APPLICATIONINSIGHTS_CONNECTION_STRING": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]",
+        "ApplicationInsightsAgent_EXTENSION_VERSION": "~3",
+        "ConnectionStrings__ContosoUniversityAPIContext": "[format('@Microsoft.KeyVault(VaultName={0};SecretName={1})', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'qa')]",
+        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'qa'), variables('keyVaultSecretsUserRole')))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.KeyVault/vaults/{0}', variables('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'staging'), variables('keyVaultSecretsUserRole'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'staging'), '2022-09-01', 'full').identity.principalId]",
+        "roleDefinitionId": "[variables('keyVaultSecretsUserRole')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'staging')]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/slots/config",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}/{2}', parameters('apiServiceName'), 'staging', 'appsettings')]",
+      "properties": {
+        "APPLICATIONINSIGHTS_CONNECTION_STRING": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]",
+        "ApplicationInsightsAgent_EXTENSION_VERSION": "~3",
+        "ConnectionStrings__ContosoUniversityAPIContext": "[format('@Microsoft.KeyVault(VaultName={0};SecretName={1})', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'staging')]",
+        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), resourceId('Microsoft.Web/sites/slots', parameters('apiServiceName'), 'staging'), variables('keyVaultSecretsUserRole')))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/sites/config",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}/{1}', parameters('apiServiceName'), 'appsettings')]",
+      "properties": {
+        "APPLICATIONINSIGHTS_CONNECTION_STRING": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]",
+        "ApplicationInsightsAgent_EXTENSION_VERSION": "~3",
+        "ConnectionStrings__ContosoUniversityAPIContext": "[format('@Microsoft.KeyVault(VaultName={0};SecretName={1})', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('apiServiceName'))]",
+        "[extensionResourceId(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), resourceId('Microsoft.Web/sites', parameters('apiServiceName')), variables('keyVaultSecretsUserRole')))]",
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]",
+        "[resourceId('Microsoft.KeyVault/vaults/secrets', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.KeyVault/vaults/{0}', variables('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), resourceId('Microsoft.Web/sites', parameters('webServiceName')), variables('keyVaultSecretsUserRole'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('webServiceName')), '2022-09-01', 'full').identity.principalId]",
+        "roleDefinitionId": "[variables('keyVaultSecretsUserRole')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('webServiceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.KeyVault/vaults/{0}', variables('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), resourceId('Microsoft.Web/sites', parameters('apiServiceName')), variables('keyVaultSecretsUserRole'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', parameters('apiServiceName')), '2022-09-01', 'full').identity.principalId]",
+        "roleDefinitionId": "[variables('keyVaultSecretsUserRole')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('apiServiceName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'sql')]",
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "version": "12.0",
+        "minimalTlsVersion": "1.2",
+        "publicNetworkAccess": "Disabled",
+        "administratorLogin": "[parameters('sqlAdminUsername')]",
+        "administratorLoginPassword": "[parameters('sqlAdminPassword')]"
+      }
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'aad')]",
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "version": "12.0",
+        "minimalTlsVersion": "1.2",
+        "publicNetworkAccess": "Disabled",
+        "administrators": {
+          "administratorType": "ActiveDirectory",
+          "principalType": "User",
+          "login": "[parameters('sqlAadAdminName')]",
+          "sid": "[parameters('sqlAadAdminObjectId')]",
+          "tenantId": "[subscription().tenantId]",
+          "azureADOnlyAuthentication": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-05-01",
+      "name": "[format('pe-{0}', variables('sqlServerName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {
+        "subnet": {
+          "id": "[format('{0}/subnets/{1}', resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), variables('privateEndpointSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "sqlConnection",
+            "properties": {
+              "privateLinkServiceId": "[if(equals(parameters('sqlAuthMode'), 'sql'), resourceId('Microsoft.Sql/servers', variables('sqlServerName')), resourceId('Microsoft.Sql/servers', variables('sqlServerName')))]",
+              "groupIds": [
+                "sqlServer"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', format('pe-{0}', variables('sqlServerName')), 'sqlDnsGroup')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "config1",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink{0}', environment().suffixes.sqlServerHostname))]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', format('privatelink{0}', environment().suffixes.sqlServerHostname))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', format('pe-{0}', variables('sqlServerName')))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'sql')]",
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[format('{0}/{1}', variables('sqlServerName'), variables('sqlDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "S0",
+        "tier": "Standard"
+      },
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS",
+        "maxSizeBytes": 2147483648
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'aad')]",
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[format('{0}/{1}', variables('sqlServerName'), variables('sqlDatabaseName'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "S0",
+        "tier": "Standard"
+      },
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS",
+        "maxSizeBytes": 2147483648
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'sql')]",
+      "type": "Microsoft.Resources/deploymentScripts",
+      "apiVersion": "2020-10-01",
+      "name": "[format('{0}-init-script', variables('sqlServerName'))]",
+      "location": "[parameters('location')]",
+      "kind": "AzureCLI",
+      "properties": {
+        "azCliVersion": "2.37.0",
+        "retentionInterval": "PT1H",
+        "timeout": "PT5M",
+        "cleanupPreference": "OnSuccess",
+        "environmentVariables": [
+          {
+            "name": "APPUSERNAME",
+            "value": "[parameters('sqlAppUser')]"
+          },
+          {
+            "name": "APPUSERPASSWORD",
+            "secureValue": "[parameters('sqlAppUserPassword')]"
+          },
+          {
+            "name": "DBNAME",
+            "value": "[variables('sqlDatabaseName')]"
+          },
+          {
+            "name": "DBSERVER",
+            "value": "[variables('sqlServerFqdn')]"
+          },
+          {
+            "name": "SQLCMDPASSWORD",
+            "secureValue": "[parameters('sqlAdminPassword')]"
+          },
+          {
+            "name": "SQLADMIN",
+            "value": "[parameters('sqlAdminUsername')]"
+          }
+        ],
+        "scriptContent": "      wget https://github.com/microsoft/go-sqlcmd/releases/download/v0.8.1/sqlcmd-v0.8.1-linux-x64.tar.bz2\r\n      tar x -f sqlcmd-v0.8.1-linux-x64.tar.bz2 -C .\r\n\r\n      cat <<SCRIPT_END > ./initDb.sql\r\n      IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '${APPUSERNAME}')\r\n      BEGIN\r\n        CREATE USER [${APPUSERNAME}] WITH PASSWORD = '${APPUSERPASSWORD}'\r\n      END\r\n      GO\r\n      ALTER ROLE db_datareader ADD MEMBER [${APPUSERNAME}]\r\n      GO\r\n      ALTER ROLE db_datawriter ADD MEMBER [${APPUSERNAME}]\r\n      GO\r\n      ALTER ROLE db_ddladmin ADD MEMBER [${APPUSERNAME}]\r\n      GO\r\n      SCRIPT_END\r\n\r\n      ./sqlcmd -S ${DBSERVER} -d ${DBNAME} -U ${SQLADMIN} -i ./initDb.sql\r\n    "
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers/databases', variables('sqlServerName'), variables('sqlDatabaseName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'sql')]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2022-07-01",
+      "name": "[format('{0}/{1}', variables('keyVaultName'), 'sqlAdminPassword')]",
+      "properties": {
+        "value": "[parameters('sqlAdminPassword')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'sql')]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2022-07-01",
+      "name": "[format('{0}/{1}', variables('keyVaultName'), 'appUserPassword')]",
+      "properties": {
+        "value": "[parameters('sqlAppUserPassword')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'sql')]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2022-07-01",
+      "name": "[format('{0}/{1}', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]",
+      "properties": {
+        "value": "[variables('sqlConnectionStringSql')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.Resources/deploymentScripts', format('{0}-init-script', variables('sqlServerName')))]"
+      ]
+    },
+    {
+      "condition": "[equals(parameters('sqlAuthMode'), 'aad')]",
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2022-07-01",
+      "name": "[format('{0}/{1}', variables('keyVaultName'), parameters('sqlConnectionStringKey'))]",
+      "properties": {
+        "value": "[variables('sqlConnectionStringAad')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+        "[resourceId('Microsoft.Sql/servers/databases', variables('sqlServerName'), variables('sqlDatabaseName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.LoadTestService/loadTests",
+      "apiVersion": "2022-12-01",
+      "name": "[variables('loadTestingName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "properties": {}
+    },
+    {
+      "condition": "[parameters('enableSreAgent')]",
+      "type": "Microsoft.App/agents",
+      "apiVersion": "2025-05-01-preview",
+      "name": "[variables('sreAgentName')]",
+      "location": "[variables('sreAgentLocation')]",
+      "tags": "[union(variables('tags'), createObject('purpose', 'sre-automation', 'monitoredResources', parameters('location')))]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "agentMode": "[parameters('sreAgentMode')]",
+        "accessLevel": "High"
+      }
+    },
+    {
+      "condition": "[parameters('enableSreAgent')]",
+      "type": "Microsoft.App/agents/dataConnectors",
+      "apiVersion": "2025-05-01-preview",
+      "name": "[format('{0}/{1}', variables('sreAgentName'), 'appinsights-connector')]",
+      "properties": {
+        "connectorType": "ApplicationInsights",
+        "targetResourceId": "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.App/agents', variables('sreAgentName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableSreAgent')]",
+      "type": "Microsoft.App/agents/dataConnectors",
+      "apiVersion": "2025-05-01-preview",
+      "name": "[format('{0}/{1}', variables('sreAgentName'), 'loganalytics-connector')]",
+      "properties": {
+        "connectorType": "LogAnalytics",
+        "targetResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "[resourceId('Microsoft.App/agents', variables('sreAgentName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableSreAgent')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Web/sites/{0}', parameters('apiServiceName'))]",
+      "name": "[guid(resourceId('Microsoft.Web/sites', parameters('apiServiceName')), resourceId('Microsoft.App/agents', variables('sreAgentName')), variables('readerRoleId'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.App/agents', variables('sreAgentName')), '2025-05-01-preview', 'full').identity.principalId]",
+        "roleDefinitionId": "[variables('readerRoleId')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', parameters('apiServiceName'))]",
+        "[resourceId('Microsoft.App/agents', variables('sreAgentName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableSreAgent')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Web/sites/{0}', parameters('webServiceName'))]",
+      "name": "[guid(resourceId('Microsoft.Web/sites', parameters('webServiceName')), resourceId('Microsoft.App/agents', variables('sreAgentName')), variables('readerRoleId'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.App/agents', variables('sreAgentName')), '2025-05-01-preview', 'full').identity.principalId]",
+        "roleDefinitionId": "[variables('readerRoleId')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/agents', variables('sreAgentName'))]",
+        "[resourceId('Microsoft.Web/sites', parameters('webServiceName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableSreAgent')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Insights/components/{0}', variables('appInsightsName'))]",
+      "name": "[guid(resourceId('Microsoft.Insights/components', variables('appInsightsName')), resourceId('Microsoft.App/agents', variables('sreAgentName')), variables('readerRoleId'))]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.App/agents', variables('sreAgentName')), '2025-05-01-preview', 'full').identity.principalId]",
+        "roleDefinitionId": "[variables('readerRoleId')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]",
+        "[resourceId('Microsoft.App/agents', variables('sreAgentName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "webAppName": {
+      "type": "string",
+      "value": "[parameters('webServiceName')]"
+    },
+    "apiAppName": {
+      "type": "string",
+      "value": "[parameters('apiServiceName')]"
+    },
+    "sqlServerName": {
+      "type": "string",
+      "value": "[variables('sqlServerName')]"
+    },
+    "sqlDatabaseName": {
+      "type": "string",
+      "value": "[variables('sqlDatabaseName')]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[variables('keyVaultName')]"
+    },
+    "keyVaultEndpoint": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), '2022-07-01').vaultUri]"
+    },
+    "appInsightsName": {
+      "type": "string",
+      "value": "[variables('appInsightsName')]"
+    },
+    "loadTestingName": {
+      "type": "string",
+      "value": "[variables('loadTestingName')]"
+    },
+    "sreAgentName": {
+      "type": "string",
+      "value": "[if(parameters('enableSreAgent'), variables('sreAgentName'), '')]"
+    },
+    "sreAgentMode": {
+      "type": "string",
+      "value": "[parameters('sreAgentMode')]"
+    },
+    "webUri": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('webServiceName')), '2022-09-01').defaultHostName)]"
+    },
+    "apiUri": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('apiServiceName')), '2022-09-01').defaultHostName)]"
+    },
+    "appInsightsConnectionString": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName')), '2020-02-02').ConnectionString]"
+    },
+    "sqlServerFqdn": {
+      "type": "string",
+      "value": "[variables('sqlServerFqdn')]"
+    },
+    "sqlAuthMode": {
+      "type": "string",
+      "value": "[parameters('sqlAuthMode')]"
+    }
+  }
+}

@@ -1,0 +1,120 @@
+# =============================================================================
+# Load Test Manifest - Central Registry for All Load Tests
+# =============================================================================
+# This manifest is used by the CI/CD pipeline to auto-discover and run tests.
+# All tests use the standard template: templates/http-test.jmx
+# =============================================================================
+
+version: "1.0"
+description: "Contoso University Load Testing Manifest"
+
+# =============================================================================
+# JMeter Template - Single source of truth for all load tests
+# =============================================================================
+template:
+  jmeterFile: templates/http-test.jmx
+  description: "Standard HTTP test template for Contoso University"
+
+# Test profiles define the type of testing scenario
+profiles:
+  smoke:
+    description: "Quick validation tests with minimal load"
+    concurrentUsers: 5
+    durationSeconds: 60
+    rampUpSeconds: 10
+    
+  load:
+    description: "Standard load tests for performance validation"
+    concurrentUsers: 50
+    durationSeconds: 300
+    rampUpSeconds: 60
+    
+  stress:
+    description: "High-load tests to find breaking points"
+    concurrentUsers: 200
+    durationSeconds: 600
+    rampUpSeconds: 120
+    
+  chaos:
+    description: "Tests designed to run during chaos experiments"
+    concurrentUsers: 30
+    durationSeconds: 900
+    rampUpSeconds: 60
+
+# =============================================================================
+# Test Definitions - All tests use the shared template
+# =============================================================================
+tests:
+  - id: instructor-pagination
+    name: "Instructor Pagination Load Test"
+    description: "Tests instructor page pagination from page 2 to 19"
+    jmeterFile: templates/instructor-pagination-test.jmx
+    profiles:
+      - smoke
+      - load
+    enabled: true
+    tags:
+      - instructors
+      - pagination
+
+  - id: homepage-loadtime
+    name: "Home Page Load Time Test"
+    description: "Tests home page load time - 10 requests every 30 seconds for 3 minutes"
+    jmeterFile: templates/homepage-loadtime-test.jmx
+    profiles:
+      - smoke
+      - load
+    enabled: true
+    tags:
+      - homepage
+      - performance
+    # Custom settings for this test (overrides profile defaults)
+    customConfig:
+      concurrentUsers: 10
+      durationSeconds: 180
+      requestIntervalSeconds: 30
+
+  - id: about-page
+    name: "About Page Load Test"
+    description: "Tests About page load time - validates page rendering and API call to /api/Values"
+    jmeterFile: templates/about-page-test.jmx
+    profiles:
+      - smoke
+      - load
+    enabled: true
+    tags:
+      - about
+      - performance
+      - api-integration
+    # Custom settings for this test (overrides profile defaults)
+    customConfig:
+      concurrentUsers: 10
+      durationSeconds: 180
+      requestIntervalSeconds: 30
+
+# =============================================================================
+# Default failure criteria (can be overridden per test)
+# =============================================================================
+defaultCriteria:
+  avgResponseTimeMs: 5000
+  percentile95Ms: 6000
+  errorPercentage: 10
+
+# =============================================================================
+# Chaos Experiments - Linked to the chaos profile tests
+# =============================================================================
+chaosExperiments: []
+  # No chaos experiments linked - add tests first, then link experiments
+
+# =============================================================================
+# Environment-specific URLs (referenced by workflow)
+# =============================================================================
+environments:
+  dev:
+    webapp_url_var: DEV_APP_URL
+  qa:
+    webapp_url_var: QA_APP_URL
+  staging:
+    webapp_url_var: STAGING_APP_URL
+  prod:
+    webapp_url_var: PROD_APP_URL

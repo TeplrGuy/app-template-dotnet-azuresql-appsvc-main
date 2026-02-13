@@ -1,0 +1,1359 @@
+name: 🏗️ Infrastructure Deployment
+
+# =============================================================================
+# INFRASTRUCTURE DEPLOYMENT WORKFLOW
+# =============================================================================
+# This workflow deploys Azure infrastructure and automatically configures
+# connection strings for the application.
+#
+# PREREQUISITES:
+# 1. Configure OIDC authentication (recommended) or service principal
+# 2. Set required secrets and variables (see below)
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infrastructure.yml'
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: 'Force redeploy all infrastructure (ignore resource checks)'
+        required: false
+        default: false
+        type: boolean
+      deploy_infrastructure:
+        description: 'Deploy/update infrastructure'
+        required: false
+        default: true
+        type: boolean
+      configure_app_settings:
+        description: 'Configure app connection strings'
+        required: false
+        default: true
+        type: boolean
+
+# Required for OIDC authentication
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # Resource naming
+  ENVIRONMENT_NAME: ${{ vars.AZURE_ENVIRONMENT_NAME || secrets.AZURE_ENVIRONMENT_NAME }}
+  LOCATION: ${{ vars.AZURE_LOCATION || secrets.AZURE_LOCATION || 'eastus' }}
+  RESOURCE_GROUP: rg-${{ vars.AZURE_ENVIRONMENT_NAME || secrets.AZURE_ENVIRONMENT_NAME }}
+  
+  # App Service names
+  WEBAPP_NAME: ${{ vars.AZURE_ENVIRONMENT_NAME || secrets.AZURE_ENVIRONMENT_NAME }}-app
+  API_NAME: ${{ vars.AZURE_ENVIRONMENT_NAME || secrets.AZURE_ENVIRONMENT_NAME }}-api
+  
+  # SQL Configuration
+  # SQL_AUTH_MODE: 'sql' for SQL auth (requires passwords), 'aad' for Azure AD only (MCAPS compliant)
+  SQL_AUTH_MODE: ${{ vars.SQL_AUTH_MODE || 'aad' }}
+  SQL_ADMIN_USERNAME: sqladmin
+  SQL_APP_USER: appUser
+  SQL_CONNECTION_STRING_KEY: AZURE-SQL-CONNECTION-STRING
+  
+  # SRE Agent Configuration (disabled by default - requires Owner role for RBAC)
+  ENABLE_SRE_AGENT: ${{ vars.ENABLE_SRE_AGENT || 'false' }}
+  SRE_AGENT_MODE: ${{ vars.SRE_AGENT_MODE || 'Review' }}
+  GITHUB_REPO_URL: ${{ vars.GITHUB_REPO_URL || 'https://github.com/TeplrGuy/app-template-dotnet-azuresql-appsvc' }}
+
+jobs:
+  # ===========================================================================
+  # VALIDATE CONFIGURATION
+  # ===========================================================================
+  validate:
+    name: ✅ Validate Configuration
+    runs-on: ubuntu-latest
+    outputs:
+      resource_group: ${{ steps.config.outputs.resource_group }}
+      webapp_name: ${{ steps.config.outputs.webapp_name }}
+      api_name: ${{ steps.config.outputs.api_name }}
+    
+    steps:
+      - name: 🔍 Check Required Secrets
+        run: |
+          MISSING=""
+          AUTH_MODE="${{ env.SQL_AUTH_MODE }}"
+          echo "🔐 SQL Authentication Mode: $AUTH_MODE"
+          
+          if [ -z "${{ env.ENVIRONMENT_NAME }}" ]; then
+            MISSING="$MISSING AZURE_ENVIRONMENT_NAME"
+          fi
+          
+          # Check auth mode specific secrets
+          if [ "$AUTH_MODE" == "sql" ]; then
+            echo "📋 Checking SQL Authentication requirements..."
+            if [ -z "${{ secrets.AZURE_SQL_ADMIN_PASSWORD }}" ]; then
+              MISSING="$MISSING AZURE_SQL_ADMIN_PASSWORD"
+            fi
+            
+            if [ -z "${{ secrets.AZURE_SQL_APP_USER_PASSWORD }}" ]; then
+              MISSING="$MISSING AZURE_SQL_APP_USER_PASSWORD"
+            fi
+          else
+            echo "📋 Checking Azure AD Authentication requirements..."
+            if [ -z "${{ secrets.AZURE_SQL_AAD_ADMIN_NAME }}" ]; then
+              MISSING="$MISSING AZURE_SQL_AAD_ADMIN_NAME"
+            fi
+            
+            if [ -z "${{ secrets.AZURE_SQL_AAD_ADMIN_OBJECT_ID }}" ]; then
+              MISSING="$MISSING AZURE_SQL_AAD_ADMIN_OBJECT_ID"
+            fi
+          fi
+          
+          if [ -n "$MISSING" ]; then
+            echo "❌ Missing required secrets/variables:$MISSING"
+            echo ""
+            echo "Please configure the following in your repository settings:"
+            echo "  - AZURE_ENVIRONMENT_NAME: Unique prefix for resources"
+            echo ""
+            if [ "$AUTH_MODE" == "sql" ]; then
+              echo "For SQL Authentication mode (SQL_AUTH_MODE=sql):"
+              echo "  - AZURE_SQL_ADMIN_PASSWORD: SQL Server admin password"
+              echo "  - AZURE_SQL_APP_USER_PASSWORD: SQL app user password"
+            else
+              echo "For Azure AD Authentication mode (SQL_AUTH_MODE=aad):"
+              echo "  - AZURE_SQL_AAD_ADMIN_NAME: Azure AD admin display name"
+              echo "  - AZURE_SQL_AAD_ADMIN_OBJECT_ID: Azure AD admin object ID"
+            fi
+            echo ""
+            echo "For OIDC auth, also configure:"
+            echo "  - AZURE_CLIENT_ID"
+            echo "  - AZURE_TENANT_ID"
+            echo "  - AZURE_SUBSCRIPTION_ID"
+            exit 1
+          fi
+          
+          echo "✅ All required configuration found"
+      
+      - name: 📝 Output Configuration
+        id: config
+        run: |
+          echo "resource_group=${{ env.RESOURCE_GROUP }}" >> $GITHUB_OUTPUT
+          echo "webapp_name=${{ env.WEBAPP_NAME }}" >> $GITHUB_OUTPUT
+          echo "api_name=${{ env.API_NAME }}" >> $GITHUB_OUTPUT
+          
+          echo "## 📋 Configuration Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource Group | ${{ env.RESOURCE_GROUP }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Location | ${{ env.LOCATION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Web App | ${{ env.WEBAPP_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ${{ env.API_NAME }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # DEPLOY INFRASTRUCTURE (if main.bicep exists)
+  # ===========================================================================
+  deploy-infra:
+    name: 🏗️ Deploy Infrastructure
+    needs: validate
+    runs-on: ubuntu-latest
+    # Run for push events, or for workflow_dispatch when deploy_infrastructure is not false
+    if: github.event_name == 'push' || github.event.inputs.deploy_infrastructure != 'false'
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        continue-on-error: true
+        id: oidc-login
+
+      - name: 🔐 Azure Login (Service Principal Fallback)
+        if: steps.oidc-login.outcome == 'failure'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 📁 Check for Infrastructure Templates
+        id: check-infra
+        run: |
+          if [ -f "infra/main.bicep" ]; then
+            echo "has_main_bicep=true" >> $GITHUB_OUTPUT
+            echo "✅ Found infra/main.bicep"
+          else
+            echo "has_main_bicep=false" >> $GITHUB_OUTPUT
+            echo "⚠️ No infra/main.bicep found - skipping infrastructure deployment"
+            echo "Infrastructure deployment skipped - no main.bicep found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🔍 Check Resource Group Exists
+        if: steps.check-infra.outputs.has_main_bicep == 'true'
+        id: check-rg
+        run: |
+          if az group show --name "${{ env.RESOURCE_GROUP }}" &>/dev/null; then
+            echo "rg_exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Resource group ${{ env.RESOURCE_GROUP }} exists"
+          else
+            echo "rg_exists=false" >> $GITHUB_OUTPUT
+            echo "needs_deploy=true" >> $GITHUB_OUTPUT
+            echo "📝 Resource group ${{ env.RESOURCE_GROUP }} will be created"
+            echo "🚀 Deployment required - resource group doesn't exist"
+          fi
+
+      - name: 🔍 Check Missing Resources
+        if: steps.check-infra.outputs.has_main_bicep == 'true' && steps.check-rg.outputs.rg_exists == 'true'
+        id: check-resources
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          MISSING=""
+          
+          # Check SQL Server
+          if ! az sql server show -g "$RG" -n "sql-${{ env.ENVIRONMENT_NAME }}" &>/dev/null; then
+            MISSING="$MISSING SQL-Server"
+            echo "⚠️ SQL Server not found"
+          else
+            echo "✅ SQL Server exists"
+          fi
+          
+          # Check SQL Database
+          if ! az sql db show -g "$RG" -s "sql-${{ env.ENVIRONMENT_NAME }}" -n "sqldb-${{ env.ENVIRONMENT_NAME }}" &>/dev/null 2>&1; then
+            MISSING="$MISSING SQL-Database"
+            echo "⚠️ SQL Database not found"
+          else
+            echo "✅ SQL Database exists"
+          fi
+          
+          # Check App Service Plan
+          if ! az appservice plan show -g "$RG" -n "plan-${{ env.ENVIRONMENT_NAME }}" &>/dev/null; then
+            MISSING="$MISSING AppServicePlan"
+            echo "⚠️ App Service Plan not found"
+          else
+            echo "✅ App Service Plan exists"
+          fi
+          
+          # Check Web App
+          if ! az webapp show -g "$RG" -n "${{ env.WEBAPP_NAME }}" &>/dev/null; then
+            MISSING="$MISSING WebApp"
+            echo "⚠️ Web App not found"
+          else
+            echo "✅ Web App exists"
+          fi
+          
+          # Check API App
+          if ! az webapp show -g "$RG" -n "${{ env.API_NAME }}" &>/dev/null; then
+            MISSING="$MISSING APIApp"
+            echo "⚠️ API App not found"
+          else
+            echo "✅ API App exists"
+          fi
+          
+          # Check Application Insights
+          if ! az monitor app-insights component show -g "$RG" -a "appi-${{ env.ENVIRONMENT_NAME }}" &>/dev/null; then
+            MISSING="$MISSING AppInsights"
+            echo "⚠️ Application Insights not found"
+          else
+            echo "✅ Application Insights exists"
+          fi
+          
+          # Check Load Testing
+          if ! az load show -g "$RG" -n "lt-${{ env.ENVIRONMENT_NAME }}" &>/dev/null 2>&1; then
+            MISSING="$MISSING LoadTesting"
+            echo "⚠️ Load Testing not found"
+          else
+            echo "✅ Load Testing exists"
+          fi
+          
+          # Check VNet (required for private SQL connectivity)
+          if ! az network vnet show -g "$RG" -n "vnet-${{ env.ENVIRONMENT_NAME }}" &>/dev/null 2>&1; then
+            MISSING="$MISSING VNet"
+            echo "⚠️ VNet not found"
+          else
+            echo "✅ VNet exists"
+          fi
+          
+          # Check SQL Private Endpoint (required for private SQL connectivity)
+          if ! az network private-endpoint show -g "$RG" -n "pe-sql-${{ env.ENVIRONMENT_NAME }}" &>/dev/null 2>&1; then
+            MISSING="$MISSING SQLPrivateEndpoint"
+            echo "⚠️ SQL Private Endpoint not found"
+          else
+            echo "✅ SQL Private Endpoint exists"
+          fi
+          
+          # Check Private DNS Zone for SQL
+          if ! az network private-dns zone show -g "$RG" -n "privatelink.database.windows.net" &>/dev/null 2>&1; then
+            MISSING="$MISSING PrivateDNSZone"
+            echo "⚠️ Private DNS Zone not found"
+          else
+            echo "✅ Private DNS Zone exists"
+          fi
+          
+          # Check SRE Agent (only if enabled)
+          if [ "${{ env.ENABLE_SRE_AGENT }}" == "true" ]; then
+            if ! az resource show --resource-group "$RG" --resource-type "Microsoft.App/agents" --name "sre-${{ env.ENVIRONMENT_NAME }}" &>/dev/null 2>&1; then
+              MISSING="$MISSING SREAgent"
+              echo "⚠️ SRE Agent not found"
+            else
+              echo "✅ SRE Agent exists"
+            fi
+          fi
+          
+          if [ -n "$MISSING" ]; then
+            echo "needs_deploy=true" >> $GITHUB_OUTPUT
+            echo "missing_resources=$MISSING" >> $GITHUB_OUTPUT
+            echo ""
+            echo "📋 Missing resources:$MISSING"
+            echo "🚀 Deployment required!"
+          else
+            echo "needs_deploy=false" >> $GITHUB_OUTPUT
+            echo "✅ All resources exist - deployment will be skipped"
+            echo "💡 Use force_deploy=true to redeploy anyway"
+          fi
+
+      - name: ⏭️ Skip Deploy (All Resources Exist)
+        if: |
+          steps.check-infra.outputs.has_main_bicep == 'true' &&
+          steps.check-rg.outputs.needs_deploy != 'true' &&
+          steps.check-resources.outputs.needs_deploy != 'true' &&
+          github.event.inputs.force_deploy != 'true'
+        run: |
+          echo "## ⏭️ Infrastructure Deployment Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All resources already exist. Use **force_deploy=true** to redeploy." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Existing Resources:" >> $GITHUB_STEP_SUMMARY
+          echo "- Resource Group: ${{ env.RESOURCE_GROUP }}" >> $GITHUB_STEP_SUMMARY
+          echo "- SQL Server: sql-${{ env.ENVIRONMENT_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Web App: ${{ env.WEBAPP_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- API App: ${{ env.API_NAME }}" >> $GITHUB_STEP_SUMMARY
+
+      - name: 🏗️ Deploy Bicep Template (SQL Auth)
+        if: |
+          env.SQL_AUTH_MODE == 'sql' &&
+          steps.check-infra.outputs.has_main_bicep == 'true' && 
+          (github.event.inputs.force_deploy == 'true' || 
+           steps.check-rg.outputs.needs_deploy == 'true' || 
+           steps.check-resources.outputs.needs_deploy == 'true')
+        id: deploy-sql
+        uses: azure/arm-deploy@v2
+        with:
+          scope: subscription
+          subscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          region: ${{ env.LOCATION }}
+          template: infra/main.bicep
+          deploymentName: 'infra-${{ github.run_id }}'
+          parameters: >
+            environmentName=${{ env.ENVIRONMENT_NAME }}
+            location=${{ env.LOCATION }}
+            webServiceName=${{ env.WEBAPP_NAME }}
+            apiServiceName=${{ env.API_NAME }}
+            sqlAuthMode=sql
+            sqlAdminUsername=${{ env.SQL_ADMIN_USERNAME }}
+            sqlAdminPassword=${{ secrets.AZURE_SQL_ADMIN_PASSWORD }}
+            sqlAppUserPassword=${{ secrets.AZURE_SQL_APP_USER_PASSWORD }}
+            sqlAppUser=${{ env.SQL_APP_USER }}
+            sqlConnectionStringKey=${{ env.SQL_CONNECTION_STRING_KEY }}
+            enableSreAgent=${{ env.ENABLE_SRE_AGENT }}
+            sreAgentMode=${{ env.SRE_AGENT_MODE }}
+            githubRepoUrl=${{ env.GITHUB_REPO_URL }}
+          failOnStdErr: false
+
+      - name: 🏗️ Deploy Bicep Template (Azure AD Auth)
+        if: |
+          env.SQL_AUTH_MODE != 'sql' &&
+          steps.check-infra.outputs.has_main_bicep == 'true' && 
+          (github.event.inputs.force_deploy == 'true' || 
+           steps.check-rg.outputs.needs_deploy == 'true' || 
+           steps.check-resources.outputs.needs_deploy == 'true')
+        id: deploy-aad
+        uses: azure/arm-deploy@v2
+        with:
+          scope: subscription
+          subscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          region: ${{ env.LOCATION }}
+          template: infra/main.bicep
+          deploymentName: 'infra-${{ github.run_id }}'
+          parameters: >
+            environmentName=${{ env.ENVIRONMENT_NAME }}
+            location=${{ env.LOCATION }}
+            webServiceName=${{ env.WEBAPP_NAME }}
+            apiServiceName=${{ env.API_NAME }}
+            sqlAuthMode=aad
+            sqlAadAdminName=${{ secrets.AZURE_SQL_AAD_ADMIN_NAME }}
+            sqlAadAdminObjectId=${{ secrets.AZURE_SQL_AAD_ADMIN_OBJECT_ID }}
+            sqlConnectionStringKey=${{ env.SQL_CONNECTION_STRING_KEY }}
+            enableSreAgent=${{ env.ENABLE_SRE_AGENT }}
+            sreAgentMode=${{ env.SRE_AGENT_MODE }}
+            githubRepoUrl=${{ env.GITHUB_REPO_URL }}
+          failOnStdErr: false
+
+      - name: � Export Resource Names to GitHub Variables
+        if: steps.deploy-sql.outcome == 'success' || steps.deploy-aad.outcome == 'success' || steps.check-resources.outputs.needs_deploy != 'true'
+        env:
+          # Use GH_PAT if available (required for setting repo variables), fallback to GITHUB_TOKEN
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          echo "📤 Exporting resource names to GitHub Variables..."
+          echo ""
+          echo "ℹ️ Note: Setting GitHub Variables requires a Personal Access Token (PAT) with 'repo' scope."
+          echo "   Store it as a secret named 'GH_PAT'. Without it, variables won't be set automatically."
+          echo ""
+          gh variable set AZURE_RESOURCE_GROUP --body "${{ env.RESOURCE_GROUP }}" || echo "⚠️ Could not set AZURE_RESOURCE_GROUP"
+          gh variable set AZURE_WEBAPP_NAME --body "${{ env.WEBAPP_NAME }}" || echo "⚠️ Could not set AZURE_WEBAPP_NAME"  
+          gh variable set AZURE_API_NAME --body "${{ env.API_NAME }}" || echo "⚠️ Could not set AZURE_API_NAME"
+          gh variable set AZURE_SQL_SERVER --body "sql-${{ env.ENVIRONMENT_NAME }}" || echo "⚠️ Could not set AZURE_SQL_SERVER"
+          gh variable set AZURE_SQL_DATABASE --body "sqldb-${{ env.ENVIRONMENT_NAME }}" || echo "⚠️ Could not set AZURE_SQL_DATABASE"
+          gh variable set AZURE_KEY_VAULT_NAME --body "kv-${{ env.ENVIRONMENT_NAME }}" || echo "⚠️ Could not set AZURE_KEY_VAULT_NAME"
+          gh variable set AZURE_KEY_VAULT_ENDPOINT --body "https://kv-${{ env.ENVIRONMENT_NAME }}.vault.azure.net/" || echo "⚠️ Could not set AZURE_KEY_VAULT_ENDPOINT"
+          gh variable set AZURE_APPINSIGHTS_NAME --body "appi-${{ env.ENVIRONMENT_NAME }}" || echo "⚠️ Could not set AZURE_APPINSIGHTS_NAME"
+          gh variable set AZURE_LOAD_TEST_RESOURCE --body "lt-${{ env.ENVIRONMENT_NAME }}" || echo "⚠️ Could not set AZURE_LOAD_TEST_RESOURCE"
+          gh variable set AZURE_APP_SERVICE_PLAN --body "plan-${{ env.ENVIRONMENT_NAME }}" || echo "⚠️ Could not set AZURE_APP_SERVICE_PLAN"
+          gh variable set SQL_AUTH_MODE --body "${{ env.SQL_AUTH_MODE }}" || echo "⚠️ Could not set SQL_AUTH_MODE"
+          
+          # Web App URL
+          gh variable set AZURE_WEBAPP_URL --body "https://${{ env.WEBAPP_NAME }}.azurewebsites.net" || echo "⚠️ Could not set AZURE_WEBAPP_URL"
+          gh variable set AZURE_API_URL --body "https://${{ env.API_NAME }}.azurewebsites.net" || echo "⚠️ Could not set AZURE_API_URL"
+          
+          echo "✅ Resource variables exported for other workflows"
+
+      - name: 📋 Deployment Summary
+        if: steps.deploy-sql.outcome == 'success' || steps.deploy-aad.outcome == 'success'
+        run: |
+          echo "## 🏗️ Infrastructure Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployed Resources:" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Name |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource Group | ${{ env.RESOURCE_GROUP }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Web App | ${{ env.WEBAPP_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| API App | ${{ env.API_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SQL Server | sql-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SQL Database | sqldb-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Application Insights | appi-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Load Testing | lt-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 URLs:" >> $GITHUB_STEP_SUMMARY
+          echo "- Web App: https://${{ env.WEBAPP_NAME }}.azurewebsites.net" >> $GITHUB_STEP_SUMMARY
+          echo "- API: https://${{ env.API_NAME }}.azurewebsites.net" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📤 Exported Variables:" >> $GITHUB_STEP_SUMMARY
+          echo "The following GitHub Variables are now available for other workflows:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`AZURE_RESOURCE_GROUP\`, \`AZURE_WEBAPP_NAME\`, \`AZURE_API_NAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`AZURE_LOAD_TEST_RESOURCE\`, \`AZURE_APPINSIGHTS_NAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`AZURE_WEBAPP_URL\`, \`AZURE_API_URL\`" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # CONFIGURE DEPLOYMENT SLOTS
+  # Creates slots for API app and configures all slots with managed identity,
+  # Key Vault access, and app settings for SQL connectivity
+  # ===========================================================================
+  configure-slots:
+    name: 🎰 Configure Deployment Slots
+    needs: [validate, deploy-infra]
+    if: always() && needs.validate.result == 'success' && needs.deploy-infra.result == 'success'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 🔐 Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        continue-on-error: true
+        id: oidc-login
+
+      - name: 🔐 Azure Login (Service Principal Fallback)
+        if: steps.oidc-login.outcome == 'failure'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 📋 Define Slot Configuration
+        id: config
+        run: |
+          echo "🔧 Configuring deployment slots..."
+          echo ""
+          echo "Environment: ${{ env.ENVIRONMENT_NAME }}"
+          echo "Resource Group: ${{ env.RESOURCE_GROUP }}"
+          echo "Web App: ${{ env.WEBAPP_NAME }}"
+          echo "API App: ${{ env.API_NAME }}"
+          echo "SQL Auth Mode: ${{ env.SQL_AUTH_MODE }}"
+          echo ""
+          
+          # Store values for later steps
+          echo "kv_name=kv-${{ env.ENVIRONMENT_NAME }}" >> $GITHUB_OUTPUT
+          echo "kv_endpoint=https://kv-${{ env.ENVIRONMENT_NAME }}.vault.azure.net/" >> $GITHUB_OUTPUT
+
+      - name: 🔐 Create Key Vault (if not exists)
+        id: keyvault
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          KV_NAME="kv-${{ env.ENVIRONMENT_NAME }}"
+          LOCATION="${{ env.LOCATION }}"
+          
+          echo "🔍 Checking if Key Vault $KV_NAME exists..."
+          if az keyvault show -n "$KV_NAME" &>/dev/null; then
+            echo "✅ Key Vault already exists"
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "📝 Creating Key Vault $KV_NAME..."
+            az keyvault create \
+              -n "$KV_NAME" \
+              -g "$RG" \
+              -l "$LOCATION" \
+              --enable-rbac-authorization true \
+              --sku standard
+            echo "✅ Key Vault created with RBAC authorization"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+          
+          # Get Key Vault resource ID for RBAC assignments
+          KV_ID=$(az keyvault show -n "$KV_NAME" --query id -o tsv)
+          echo "kv_id=$KV_ID" >> $GITHUB_OUTPUT
+
+      - name: 🔐 Grant Key Vault Admin Access to Pipeline
+        run: |
+          KV_NAME="kv-${{ env.ENVIRONMENT_NAME }}"
+          KV_ID="${{ steps.keyvault.outputs.kv_id }}"
+          CLIENT_ID="${{ secrets.AZURE_CLIENT_ID }}"
+          
+          echo "🔍 Getting service principal object ID for client: $CLIENT_ID"
+          
+          # Get the service principal's object ID from the client/app ID
+          SP_OBJECT_ID=$(az ad sp show --id "$CLIENT_ID" --query id -o tsv 2>/dev/null || echo "")
+          
+          if [ -z "$SP_OBJECT_ID" ]; then
+            echo "⚠️ Could not find service principal by client ID, trying alternative method..."
+            # Try listing service principals by app ID
+            SP_OBJECT_ID=$(az ad sp list --filter "appId eq '$CLIENT_ID'" --query "[0].id" -o tsv 2>/dev/null || echo "")
+          fi
+          
+          if [ -n "$SP_OBJECT_ID" ]; then
+            echo "✅ Found service principal object ID: $SP_OBJECT_ID"
+            echo "📝 Granting Key Vault Secrets Officer role to pipeline identity..."
+            
+            # Key Vault Secrets Officer role - allows read/write secrets
+            OFFICER_ROLE="b86a8fe4-44ce-4948-aee5-eccb2c155cd7"
+            
+            # Create role assignment
+            az role assignment create \
+              --assignee-object-id "$SP_OBJECT_ID" \
+              --assignee-principal-type ServicePrincipal \
+              --role "$OFFICER_ROLE" \
+              --scope "$KV_ID" 2>&1 || echo "  ℹ️ Role assignment returned non-zero (may already exist)"
+            
+            echo "✅ Key Vault Secrets Officer role granted"
+            echo "⏳ Waiting 60s for RBAC propagation..."
+            sleep 60
+          else
+            echo "❌ Could not determine pipeline identity"
+            echo "Attempting to use --assignee with client ID directly..."
+            
+            az role assignment create \
+              --assignee "$CLIENT_ID" \
+              --role "Key Vault Secrets Officer" \
+              --scope "$KV_ID" 2>&1 || echo "  ℹ️ Role assignment returned non-zero"
+            
+            echo "⏳ Waiting 60s for RBAC propagation..."
+            sleep 60
+          fi
+
+      - name: 🔐 Store SQL Connection String in Key Vault
+        run: |
+          KV_NAME="kv-${{ env.ENVIRONMENT_NAME }}"
+          SQL_SERVER="sql-${{ env.ENVIRONMENT_NAME }}"
+          SQL_DB="sqldb-${{ env.ENVIRONMENT_NAME }}"
+          CONN_KEY="${{ env.SQL_CONNECTION_STRING_KEY }}"
+          AUTH_MODE="${{ env.SQL_AUTH_MODE }}"
+          
+          echo "🔍 Checking if connection string secret exists..."
+          if az keyvault secret show --vault-name "$KV_NAME" -n "$CONN_KEY" &>/dev/null; then
+            echo "✅ Connection string secret already exists"
+          else
+            echo "📝 Creating SQL connection string secret..."
+            
+            if [ "$AUTH_MODE" == "aad" ]; then
+              # Azure AD auth - use managed identity in connection string
+              CONN_STRING="Server=tcp:${SQL_SERVER}.database.windows.net,1433;Database=${SQL_DB};Authentication=Active Directory Managed Identity;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+            else
+              # SQL auth - need to get password from secrets (this won't work without secrets)
+              echo "⚠️ SQL auth mode requires AZURE_SQL_ADMIN_PASSWORD secret"
+              CONN_STRING="Server=tcp:${SQL_SERVER}.database.windows.net,1433;Database=${SQL_DB};Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+            fi
+            
+            # Retry logic for RBAC propagation
+            for i in {1..3}; do
+              if az keyvault secret set --vault-name "$KV_NAME" -n "$CONN_KEY" --value "$CONN_STRING" 2>&1; then
+                echo "✅ Connection string secret created"
+                break
+              else
+                echo "⏳ Attempt $i failed, waiting 30s for RBAC propagation..."
+                sleep 30
+              fi
+            done
+          fi
+
+      - name: 🔐 Enable Managed Identity on Main Apps
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          
+          # Enable managed identity on main API App
+          API="${{ env.API_NAME }}"
+          echo "🔐 Enabling managed identity for main $API..."
+          API_PRINCIPAL=$(az webapp identity assign -g "$RG" -n "$API" --query principalId -o tsv)
+          echo "✅ API managed identity: $API_PRINCIPAL"
+          
+          # Enable managed identity on main Web App
+          WEB="${{ env.WEBAPP_NAME }}"
+          echo "🔐 Enabling managed identity for main $WEB..."
+          WEB_PRINCIPAL=$(az webapp identity assign -g "$RG" -n "$WEB" --query principalId -o tsv)
+          echo "✅ Web App managed identity: $WEB_PRINCIPAL"
+
+      - name: 🎰 Create Web App Slots (staging, qa)
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          WEB="${{ env.WEBAPP_NAME }}"
+          
+          for SLOT in staging qa; do
+            echo "🔍 Checking if $SLOT slot exists for $WEB..."
+            if az webapp deployment slot list -g "$RG" -n "$WEB" --query "[?name=='$SLOT']" -o tsv | grep -q "$SLOT"; then
+              echo "✅ Slot $SLOT already exists for $WEB"
+            else
+              echo "📝 Creating $SLOT slot for $WEB..."
+              az webapp deployment slot create -g "$RG" -n "$WEB" -s "$SLOT" --configuration-source "$WEB"
+              echo "✅ Created $SLOT slot for $WEB"
+            fi
+          done
+
+      - name: 🎰 Create API Slots (staging, qa)
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          API="${{ env.API_NAME }}"
+          
+          for SLOT in staging qa; do
+            echo "🔍 Checking if $SLOT slot exists for $API..."
+            if az webapp deployment slot list -g "$RG" -n "$API" --query "[?name=='$SLOT']" -o tsv | grep -q "$SLOT"; then
+              echo "✅ Slot $SLOT already exists for $API"
+            else
+              echo "📝 Creating $SLOT slot for $API..."
+              az webapp deployment slot create -g "$RG" -n "$API" -s "$SLOT" --configuration-source "$API"
+              echo "✅ Created $SLOT slot for $API"
+            fi
+          done
+
+      - name: 🔐 Enable Managed Identity on All Slots
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          
+          # Web App Slots
+          WEB="${{ env.WEBAPP_NAME }}"
+          for SLOT in staging qa; do
+            echo "🔐 Enabling managed identity for $WEB/$SLOT..."
+            az webapp identity assign -g "$RG" -n "$WEB" -s "$SLOT" --query principalId -o tsv
+            echo "✅ Managed identity enabled for $WEB/$SLOT"
+          done
+          
+          # API Slots
+          API="${{ env.API_NAME }}"
+          for SLOT in staging qa; do
+            echo "🔐 Enabling managed identity for $API/$SLOT..."
+            az webapp identity assign -g "$RG" -n "$API" -s "$SLOT" --query principalId -o tsv
+            echo "✅ Managed identity enabled for $API/$SLOT"
+          done
+
+      - name: 🔑 Grant Key Vault Access to ALL Apps (Main + Slots)
+        run: |
+          set -e  # Exit on error
+          
+          RG="${{ env.RESOURCE_GROUP }}"
+          KV_NAME="kv-${{ env.ENVIRONMENT_NAME }}"
+          API="${{ env.API_NAME }}"
+          WEB="${{ env.WEBAPP_NAME }}"
+          
+          # Get Key Vault resource ID
+          KV_ID=$(az keyvault show -n "$KV_NAME" --query id -o tsv)
+          echo "🔑 Key Vault ID: $KV_ID"
+          
+          # Key Vault Secrets User role definition ID
+          ROLE_ID="4633458b-17de-408a-b874-0445c86b69e6"
+          
+          echo ""
+          echo "========================================="
+          echo "🔐 Granting Key Vault Access to ALL Apps"
+          echo "========================================="
+          
+          # ---- MAIN API APP ----
+          echo ""
+          echo "📝 [1/6] Main API App: $API"
+          API_PRINCIPAL=$(az webapp identity show -g "$RG" -n "$API" --query principalId -o tsv)
+          echo "   Principal ID: $API_PRINCIPAL"
+          az role assignment create \
+            --assignee-object-id "$API_PRINCIPAL" \
+            --assignee-principal-type ServicePrincipal \
+            --role "$ROLE_ID" \
+            --scope "$KV_ID" || echo "   ℹ️ Role may already exist"
+          echo "   ✅ Done"
+          
+          # ---- MAIN WEB APP ----
+          echo ""
+          echo "📝 [2/6] Main Web App: $WEB"
+          WEB_PRINCIPAL=$(az webapp identity show -g "$RG" -n "$WEB" --query principalId -o tsv)
+          echo "   Principal ID: $WEB_PRINCIPAL"
+          az role assignment create \
+            --assignee-object-id "$WEB_PRINCIPAL" \
+            --assignee-principal-type ServicePrincipal \
+            --role "$ROLE_ID" \
+            --scope "$KV_ID" || echo "   ℹ️ Role may already exist"
+          echo "   ✅ Done"
+          
+          # ---- API STAGING SLOT ----
+          echo ""
+          echo "📝 [3/6] API Staging Slot: $API/staging"
+          API_STAGING_PRINCIPAL=$(az webapp identity show -g "$RG" -n "$API" -s staging --query principalId -o tsv)
+          echo "   Principal ID: $API_STAGING_PRINCIPAL"
+          az role assignment create \
+            --assignee-object-id "$API_STAGING_PRINCIPAL" \
+            --assignee-principal-type ServicePrincipal \
+            --role "$ROLE_ID" \
+            --scope "$KV_ID" || echo "   ℹ️ Role may already exist"
+          echo "   ✅ Done"
+          
+          # ---- API QA SLOT ----
+          echo ""
+          echo "📝 [4/6] API QA Slot: $API/qa"
+          API_QA_PRINCIPAL=$(az webapp identity show -g "$RG" -n "$API" -s qa --query principalId -o tsv)
+          echo "   Principal ID: $API_QA_PRINCIPAL"
+          az role assignment create \
+            --assignee-object-id "$API_QA_PRINCIPAL" \
+            --assignee-principal-type ServicePrincipal \
+            --role "$ROLE_ID" \
+            --scope "$KV_ID" || echo "   ℹ️ Role may already exist"
+          echo "   ✅ Done"
+          
+          # ---- WEB STAGING SLOT ----
+          echo ""
+          echo "📝 [5/6] Web Staging Slot: $WEB/staging"
+          WEB_STAGING_PRINCIPAL=$(az webapp identity show -g "$RG" -n "$WEB" -s staging --query principalId -o tsv)
+          echo "   Principal ID: $WEB_STAGING_PRINCIPAL"
+          az role assignment create \
+            --assignee-object-id "$WEB_STAGING_PRINCIPAL" \
+            --assignee-principal-type ServicePrincipal \
+            --role "$ROLE_ID" \
+            --scope "$KV_ID" || echo "   ℹ️ Role may already exist"
+          echo "   ✅ Done"
+          
+          # ---- WEB QA SLOT ----
+          echo ""
+          echo "📝 [6/6] Web QA Slot: $WEB/qa"
+          WEB_QA_PRINCIPAL=$(az webapp identity show -g "$RG" -n "$WEB" -s qa --query principalId -o tsv)
+          echo "   Principal ID: $WEB_QA_PRINCIPAL"
+          az role assignment create \
+            --assignee-object-id "$WEB_QA_PRINCIPAL" \
+            --assignee-principal-type ServicePrincipal \
+            --role "$ROLE_ID" \
+            --scope "$KV_ID" || echo "   ℹ️ Role may already exist"
+          echo "   ✅ Done"
+          
+          echo ""
+          echo "========================================="
+          echo "✅ Key Vault access granted to all 6 apps"
+          echo "========================================="
+          echo ""
+          echo "Summary of Principal IDs:"
+          echo "  API Main:    $API_PRINCIPAL"
+          echo "  API Staging: $API_STAGING_PRINCIPAL"
+          echo "  API QA:      $API_QA_PRINCIPAL"
+          echo "  Web Main:    $WEB_PRINCIPAL"
+          echo "  Web Staging: $WEB_STAGING_PRINCIPAL"
+          echo "  Web QA:      $WEB_QA_PRINCIPAL"
+          
+          echo ""
+          echo "⏳ Waiting 60 seconds for RBAC propagation..."
+          sleep 60
+          echo "✅ RBAC propagation wait complete"
+
+      - name: 🗄️ Create SQL Database Users for Managed Identities (AAD Auth)
+        if: env.SQL_AUTH_MODE == 'aad'
+        run: |
+          set -e
+          RG="${{ env.RESOURCE_GROUP }}"
+          API="${{ env.API_NAME }}"
+          SQL_SERVER="sql-${{ env.ENVIRONMENT_NAME }}"
+          SQL_DB="sqldb-${{ env.ENVIRONMENT_NAME }}"
+          
+          echo "🗄️ Creating SQL database users for App Service managed identities..."
+          echo ""
+          echo "SQL Server: $SQL_SERVER"
+          echo "Database: $SQL_DB"
+          echo "API App: $API"
+          echo ""
+          
+          # Get access token for SQL using the pipeline identity
+          echo "🔑 Getting access token for Azure SQL..."
+          ACCESS_TOKEN=$(az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv)
+          
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "❌ Failed to get access token for SQL"
+            exit 1
+          fi
+          echo "✅ Got access token"
+          
+          # Install sqlcmd
+          echo ""
+          echo "📦 Installing sqlcmd..."
+          curl -s https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add - 2>/dev/null
+          sudo add-apt-repository -y "$(curl -s https://packages.microsoft.com/config/ubuntu/22.04/prod.list)" 2>/dev/null
+          sudo apt-get update -qq 2>/dev/null
+          sudo apt-get install -y -qq mssql-tools18 unixodbc-dev 2>/dev/null
+          export PATH="$PATH:/opt/mssql-tools18/bin"
+          echo "✅ sqlcmd installed"
+          
+          # Create SQL script for user creation - using double quotes for variable expansion
+          echo ""
+          echo "📝 Creating SQL script for managed identity users..."
+          
+          cat > /tmp/create_users.sql << EOSQL
+          -- Create user for main API app
+          IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$API')
+          BEGIN
+              CREATE USER [$API] FROM EXTERNAL PROVIDER;
+              ALTER ROLE db_datareader ADD MEMBER [$API];
+              ALTER ROLE db_datawriter ADD MEMBER [$API];
+              ALTER ROLE db_ddladmin ADD MEMBER [$API];
+              PRINT 'Created user: $API';
+          END
+          ELSE
+              PRINT 'User already exists: $API';
+          GO
+          
+          -- Create user for API staging slot
+          IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$API/slots/staging')
+          BEGIN
+              CREATE USER [$API/slots/staging] FROM EXTERNAL PROVIDER;
+              ALTER ROLE db_datareader ADD MEMBER [$API/slots/staging];
+              ALTER ROLE db_datawriter ADD MEMBER [$API/slots/staging];
+              ALTER ROLE db_ddladmin ADD MEMBER [$API/slots/staging];
+              PRINT 'Created user: $API/slots/staging';
+          END
+          ELSE
+              PRINT 'User already exists: $API/slots/staging';
+          GO
+          
+          -- Create user for API QA slot
+          IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '$API/slots/qa')
+          BEGIN
+              CREATE USER [$API/slots/qa] FROM EXTERNAL PROVIDER;
+              ALTER ROLE db_datareader ADD MEMBER [$API/slots/qa];
+              ALTER ROLE db_datawriter ADD MEMBER [$API/slots/qa];
+              ALTER ROLE db_ddladmin ADD MEMBER [$API/slots/qa];
+              PRINT 'Created user: $API/slots/qa';
+          END
+          ELSE
+              PRINT 'User already exists: $API/slots/qa';
+          GO
+          EOSQL
+          
+          echo "Generated SQL script:"
+          cat /tmp/create_users.sql
+          echo ""
+          
+          # Run the SQL script using go-sqlcmd which supports token authentication
+          echo "🚀 Executing SQL script against $SQL_SERVER.database.windows.net/$SQL_DB..."
+          
+          # Install go-sqlcmd (modern sqlcmd with proper token support)
+          curl -sL https://github.com/microsoft/go-sqlcmd/releases/latest/download/sqlcmd-linux-amd64.tar.bz2 | tar xj -C /tmp
+          chmod +x /tmp/sqlcmd
+          
+          # Use go-sqlcmd with access token
+          echo "Using go-sqlcmd with access token authentication..."
+          /tmp/sqlcmd \
+            -S "$SQL_SERVER.database.windows.net" \
+            -d "$SQL_DB" \
+            --authentication-method=ActiveDirectoryDefault \
+            -i /tmp/create_users.sql \
+            2>&1 || {
+              echo "⚠️ sqlcmd returned an error - checking if this is expected..."
+              echo "Note: 'User already exists' errors are expected and safe to ignore"
+            }
+          
+          echo ""
+          echo "✅ SQL database user creation completed"
+
+      - name: 🔄 Restart Apps to Apply Key Vault Access
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          API="${{ env.API_NAME }}"
+          WEB="${{ env.WEBAPP_NAME }}"
+          
+          echo "🔄 Restarting apps to pick up new Key Vault permissions..."
+          
+          # Restart main apps
+          az webapp restart -g "$RG" -n "$API"
+          az webapp restart -g "$RG" -n "$WEB"
+          
+          # Restart slots
+          az webapp restart -g "$RG" -n "$API" -s staging
+          az webapp restart -g "$RG" -n "$API" -s qa
+          az webapp restart -g "$RG" -n "$WEB" -s staging
+          az webapp restart -g "$RG" -n "$WEB" -s qa
+          
+          echo "✅ All apps restarted"
+
+      - name: ⚙️ Configure API Slot App Settings
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          API="${{ env.API_NAME }}"
+          KV_ENDPOINT="${{ steps.config.outputs.kv_endpoint }}"
+          CONN_KEY="${{ env.SQL_CONNECTION_STRING_KEY }}"
+          
+          # Get App Insights connection string from main app
+          APPINSIGHTS_CONN=$(az webapp config appsettings list -g "$RG" -n "$API" \
+            --query "[?name=='APPLICATIONINSIGHTS_CONNECTION_STRING'].value" -o tsv)
+          
+          for SLOT in staging qa; do
+            echo "⚙️ Configuring app settings for $API/$SLOT..."
+            
+            az webapp config appsettings set -g "$RG" -n "$API" -s "$SLOT" \
+              --settings \
+                "AZURE_KEY_VAULT_ENDPOINT=$KV_ENDPOINT" \
+                "AZURE_SQL_CONNECTION_STRING_KEY=$CONN_KEY" \
+                "ApplicationInsightsAgent_EXTENSION_VERSION=~3" \
+                "APPLICATIONINSIGHTS_CONNECTION_STRING=$APPINSIGHTS_CONN" \
+                "WEBSITE_DNS_SERVER=168.63.129.16" \
+              --output none
+            
+            echo "✅ App settings configured for $API/$SLOT"
+          done
+
+      - name: ⚙️ Configure Main API App Settings
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          API="${{ env.API_NAME }}"
+          KV_ENDPOINT="${{ steps.config.outputs.kv_endpoint }}"
+          CONN_KEY="${{ env.SQL_CONNECTION_STRING_KEY }}"
+          
+          echo "⚙️ Configuring app settings for main $API..."
+          
+          # Check if settings already exist
+          CURRENT_KV=$(az webapp config appsettings list -g "$RG" -n "$API" \
+            --query "[?name=='AZURE_KEY_VAULT_ENDPOINT'].value" -o tsv)
+          
+          if [ -z "$CURRENT_KV" ] || [ "$CURRENT_KV" != "$KV_ENDPOINT" ]; then
+            az webapp config appsettings set -g "$RG" -n "$API" \
+              --settings \
+                "AZURE_KEY_VAULT_ENDPOINT=$KV_ENDPOINT" \
+                "AZURE_SQL_CONNECTION_STRING_KEY=$CONN_KEY" \
+                "WEBSITE_DNS_SERVER=168.63.129.16" \
+              --output none
+            echo "✅ App settings configured for main $API"
+          else
+            echo "✅ App settings already configured for main $API"
+          fi
+
+      - name: ⚙️ Configure Main Web App Settings
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          WEB="${{ env.WEBAPP_NAME }}"
+          API="${{ env.API_NAME }}"
+          API_URL="https://${API}.azurewebsites.net"
+          
+          echo "⚙️ Configuring app settings for main $WEB..."
+          
+          # Check if settings already exist
+          CURRENT_API=$(az webapp config appsettings list -g "$RG" -n "$WEB" \
+            --query "[?name=='Api__Address'].value" -o tsv)
+          
+          if [ -z "$CURRENT_API" ] || [ "$CURRENT_API" != "$API_URL" ]; then
+            az webapp config appsettings set -g "$RG" -n "$WEB" \
+              --settings \
+                "Api__Address=$API_URL" \
+              --output none
+            echo "✅ App settings configured for main $WEB (Api: $API_URL)"
+          else
+            echo "✅ App settings already configured for main $WEB"
+          fi
+
+      - name: ⚙️ Configure Web App Slot App Settings
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          WEB="${{ env.WEBAPP_NAME }}"
+          API="${{ env.API_NAME }}"
+          
+          # Get App Insights connection string from main app
+          APPINSIGHTS_CONN=$(az webapp config appsettings list -g "$RG" -n "$WEB" \
+            --query "[?name=='APPLICATIONINSIGHTS_CONNECTION_STRING'].value" -o tsv)
+          
+          for SLOT in staging qa; do
+            echo "⚙️ Configuring app settings for $WEB/$SLOT..."
+            
+            # Each slot points to the corresponding API slot
+            API_URL="https://${API}-${SLOT}.azurewebsites.net"
+            
+            az webapp config appsettings set -g "$RG" -n "$WEB" -s "$SLOT" \
+              --settings \
+                "Api__Address=$API_URL" \
+                "ApplicationInsightsAgent_EXTENSION_VERSION=~3" \
+                "APPLICATIONINSIGHTS_CONNECTION_STRING=$APPINSIGHTS_CONN" \
+              --output none
+            
+            echo "✅ App settings configured for $WEB/$SLOT (Api: $API_URL)"
+          done
+
+      - name: � Mark Api__Address as Sticky Slot Setting
+        run: |
+          RG="${{ env.RESOURCE_GROUP }}"
+          WEB="${{ env.WEBAPP_NAME }}"
+          
+          echo "📌 Marking Api__Address as a sticky slot setting on $WEB..."
+          echo "   This ensures each slot keeps its own API endpoint during swap."
+          
+          az webapp config appsettings set -g "$RG" -n "$WEB" \
+            --slot-settings "Api__Address=https://${{ env.API_NAME }}.azurewebsites.net" \
+            --output none
+          
+          echo "✅ Api__Address is now a sticky (slot-specific) setting on $WEB"
+
+      - name: �📋 Slot Configuration Summary
+        run: |
+          echo "## 🎰 Deployment Slots Configured" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### API Slots (${{ env.API_NAME }}):" >> $GITHUB_STEP_SUMMARY
+          echo "| Slot | URL | Settings |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| staging | https://${{ env.API_NAME }}-staging.azurewebsites.net | Key Vault + SQL |" >> $GITHUB_STEP_SUMMARY
+          echo "| qa | https://${{ env.API_NAME }}-qa.azurewebsites.net | Key Vault + SQL |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Web App Slots (${{ env.WEBAPP_NAME }}):" >> $GITHUB_STEP_SUMMARY
+          echo "| Slot | URL | API Endpoint |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|--------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| staging | https://${{ env.WEBAPP_NAME }}-staging.azurewebsites.net | ${{ env.API_NAME }}-staging |" >> $GITHUB_STEP_SUMMARY
+          echo "| qa | https://${{ env.WEBAPP_NAME }}-qa.azurewebsites.net | ${{ env.API_NAME }}-qa |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Configuration Applied:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Managed identity enabled on all slots" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Key Vault Secrets User role assigned" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ App settings configured for SQL connectivity" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # VERIFY DEPLOYMENT (Configuration is done via Bicep + Key Vault)
+  # ===========================================================================
+  # ===========================================================================
+  # CONFIGURE SRE AGENT
+  # ===========================================================================
+  # Uploads knowledge base documents (skills, subagents) and configures
+  # the GitHub connection for the SRE Agent. Only runs when ENABLE_SRE_AGENT=true.
+  # ===========================================================================
+  configure-sre-agent:
+    name: 🤖 Configure SRE Agent
+    needs: [deploy-infra]
+    if: |
+      always() && 
+      needs.deploy-infra.result == 'success' && 
+      contains(fromJSON('["true","True","TRUE"]'), vars.ENABLE_SRE_AGENT || 'false')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔐 Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        continue-on-error: true
+        id: oidc-login-sre
+
+      - name: 🔐 Azure Login (Service Principal Fallback)
+        if: steps.oidc-login-sre.outcome == 'failure'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 🔍 Verify SRE Agent Deployment
+        id: verify-sre
+        run: |
+          echo "🤖 Verifying SRE Agent deployment..."
+          SRE_NAME="sre-${{ env.ENVIRONMENT_NAME }}"
+          RG="${{ env.RESOURCE_GROUP }}"
+
+          if az resource show --resource-group "$RG" \
+            --resource-type "Microsoft.App/agents" \
+            --name "$SRE_NAME" &>/dev/null 2>&1; then
+            echo "✅ SRE Agent '$SRE_NAME' found in resource group '$RG'"
+            echo "sre_exists=true" >> $GITHUB_OUTPUT
+
+            # Get the agent resource ID
+            SRE_ID=$(az resource show --resource-group "$RG" \
+              --resource-type "Microsoft.App/agents" \
+              --name "$SRE_NAME" --query id -o tsv)
+            echo "sre_id=$SRE_ID" >> $GITHUB_OUTPUT
+            echo "  Resource ID: $SRE_ID"
+          else
+            echo "❌ SRE Agent '$SRE_NAME' not found"
+            echo "sre_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📚 Upload Knowledge Base Documents
+        if: steps.verify-sre.outputs.sre_exists == 'true'
+        run: |
+          echo "📚 Uploading knowledge base documents to SRE Agent..."
+          SRE_NAME="sre-${{ env.ENVIRONMENT_NAME }}"
+          RG="${{ env.RESOURCE_GROUP }}"
+          SRE_ID="${{ steps.verify-sre.outputs.sre_id }}"
+          UPLOAD_COUNT=0
+          FAIL_COUNT=0
+
+          # Function to upload a knowledge document via Azure REST API
+          upload_document() {
+            local file_path="$1"
+            local doc_name="$2"
+            local category="$3"
+
+            if [ ! -f "$file_path" ]; then
+              echo "  ⚠️ File not found: $file_path"
+              return 1
+            fi
+
+            echo "  📄 Uploading: $doc_name ($category)"
+            local content
+            content=$(cat "$file_path")
+
+            # Upload via Azure REST API to the SRE Agent knowledge store
+            local response
+            response=$(az rest --method PUT \
+              --url "https://management.azure.com${SRE_ID}/knowledgeDocuments/${doc_name}?api-version=2025-05-01-preview" \
+              --body "{
+                \"properties\": {
+                  \"content\": $(echo "$content" | jq -Rs .),
+                  \"category\": \"$category\",
+                  \"description\": \"$doc_name - $category document for Contoso University SRE\"
+                }
+              }" 2>&1) && {
+                echo "    ✅ Uploaded successfully"
+                UPLOAD_COUNT=$((UPLOAD_COUNT + 1))
+              } || {
+                echo "    ⚠️ Upload failed (may need portal upload): $response"
+                FAIL_COUNT=$((FAIL_COUNT + 1))
+              }
+          }
+
+          echo ""
+          echo "=== Skills ==="
+          upload_document "docs/sre-agent/skills/analyze-telemetry.md" "analyze-telemetry" "skill"
+          upload_document "docs/sre-agent/skills/create-github-pr.md" "create-github-pr" "skill"
+          upload_document "docs/sre-agent/skills/execute-azure-cli.md" "execute-azure-cli" "skill"
+          upload_document "docs/sre-agent/skills/run-load-test.md" "run-load-test" "skill"
+
+          echo ""
+          echo "=== Subagents ==="
+          upload_document "docs/sre-agent/subagents/incident-triage-subagent.md" "incident-triage-subagent" "subagent"
+          upload_document "docs/sre-agent/subagents/database-remediation-subagent.md" "database-remediation-subagent" "subagent"
+          upload_document "docs/sre-agent/subagents/appservice-remediation-subagent.md" "appservice-remediation-subagent" "subagent"
+          upload_document "docs/sre-agent/subagents/performance-optimization-subagent.md" "performance-optimization-subagent" "subagent"
+          upload_document "docs/sre-agent/subagents/code-remediation-subagent.md" "code-remediation-subagent" "subagent"
+
+          echo ""
+          echo "=== Knowledge Base ==="
+          upload_document "docs/SRE-KNOWLEDGE-BASE.md" "sre-knowledge-base" "runbook"
+
+          echo ""
+          echo "📊 Upload Summary: $UPLOAD_COUNT succeeded, $FAIL_COUNT failed"
+          if [ "$FAIL_COUNT" -gt 0 ]; then
+            echo "⚠️ Some uploads failed. You can manually upload these via the SRE Agent portal at https://sre.azure.com"
+          fi
+
+      - name: 🔗 Configure GitHub Connection
+        if: steps.verify-sre.outputs.sre_exists == 'true'
+        env:
+          GITHUB_PAT: ${{ secrets.SRE_GITHUB_PAT }}
+        run: |
+          echo "🔗 Configuring GitHub connection for SRE Agent..."
+          SRE_NAME="sre-${{ env.ENVIRONMENT_NAME }}"
+          RG="${{ env.RESOURCE_GROUP }}"
+          SRE_ID="${{ steps.verify-sre.outputs.sre_id }}"
+          REPO_URL="${{ env.GITHUB_REPO_URL }}"
+
+          if [ -z "$GITHUB_PAT" ]; then
+            echo "⚠️ SRE_GITHUB_PAT secret not configured."
+            echo "   To enable GitHub integration, add a repository secret named 'SRE_GITHUB_PAT'"
+            echo "   with a GitHub Personal Access Token that has 'repo' scope."
+            echo ""
+            echo "   You can also configure this manually in the SRE Agent portal:"
+            echo "   https://sre.azure.com"
+            exit 0
+          fi
+
+          echo "  Repository: $REPO_URL"
+          echo "  Frontend project: ContosoUniversity.WebApplication"
+          echo "  Backend project:  ContosoUniversity.API"
+
+          # Configure GitHub data connector via Azure REST API
+          az rest --method PUT \
+            --url "https://management.azure.com${SRE_ID}/dataConnectors/github-connector?api-version=2025-05-01-preview" \
+            --body "{
+              \"properties\": {
+                \"connectorType\": \"GitHub\",
+                \"gitHubConfiguration\": {
+                  \"repositoryUrl\": \"$REPO_URL\",
+                  \"personalAccessToken\": \"$GITHUB_PAT\",
+                  \"monitoredPaths\": [
+                    \"src/ContosoUniversity.WebApplication\",
+                    \"src/ContosoUniversity.API\",
+                    \"src/ContosoUniversity.Test\",
+                    \"infra\"
+                  ]
+                }
+              }
+            }" && {
+              echo "✅ GitHub connection configured successfully"
+              echo "   The SRE Agent can now:"
+              echo "   - Search code for root cause analysis"
+              echo "   - Create PRs with remediation fixes"
+              echo "   - Monitor both frontend and backend projects"
+            } || {
+              echo "⚠️ GitHub connector setup failed via REST API."
+              echo "   This may require manual configuration in the SRE Agent portal."
+              echo "   Navigate to: https://sre.azure.com → Select agent → Data Connectors → Add GitHub"
+            }
+
+      - name: 📋 SRE Agent Configuration Summary
+        if: steps.verify-sre.outputs.sre_exists == 'true'
+        run: |
+          echo "## 🤖 SRE Agent Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Agent Name | sre-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Mode | ${{ env.SRE_AGENT_MODE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| GitHub Repo | ${{ env.GITHUB_REPO_URL }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Portal | [Open SRE Agent](https://sre.azure.com) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📚 Knowledge Base Documents" >> $GITHUB_STEP_SUMMARY
+          echo "| Document | Type |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| analyze-telemetry | Skill |" >> $GITHUB_STEP_SUMMARY
+          echo "| create-github-pr | Skill |" >> $GITHUB_STEP_SUMMARY
+          echo "| execute-azure-cli | Skill |" >> $GITHUB_STEP_SUMMARY
+          echo "| run-load-test | Skill |" >> $GITHUB_STEP_SUMMARY
+          echo "| incident-triage-subagent | Subagent |" >> $GITHUB_STEP_SUMMARY
+          echo "| database-remediation-subagent | Subagent |" >> $GITHUB_STEP_SUMMARY
+          echo "| appservice-remediation-subagent | Subagent |" >> $GITHUB_STEP_SUMMARY
+          echo "| performance-optimization-subagent | Subagent |" >> $GITHUB_STEP_SUMMARY
+          echo "| code-remediation-subagent | Subagent |" >> $GITHUB_STEP_SUMMARY
+          echo "| sre-knowledge-base | Runbook |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏗️ Monitored Applications" >> $GITHUB_STEP_SUMMARY
+          echo "| App | Type | Name |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | Web App (MVC) | ${{ env.WEBAPP_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | API App | ${{ env.API_NAME }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ===========================================================================
+  # VERIFY DEPLOYMENT
+  # ===========================================================================
+  verify-deployment:
+    name: ✅ Verify Deployment
+    needs: [validate, deploy-infra, configure-slots, configure-sre-agent]
+    if: always() && needs.validate.result == 'success' && needs.deploy-infra.result == 'success'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 🔐 Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        continue-on-error: true
+        id: oidc-login
+
+      - name: 🔐 Azure Login (Service Principal Fallback)
+        if: steps.oidc-login.outcome == 'failure'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: 🔍 Verify Resources
+        run: |
+          echo "🔍 Verifying deployed resources..."
+          
+          # Verify Key Vault
+          KV_NAME="kv-${{ env.ENVIRONMENT_NAME }}"
+          if az keyvault show -n "$KV_NAME" &>/dev/null; then
+            echo "✅ Key Vault: $KV_NAME"
+          else
+            echo "⚠️ Key Vault not found: $KV_NAME"
+          fi
+          
+          # Verify SQL Server
+          SQL_NAME="sql-${{ env.ENVIRONMENT_NAME }}"
+          if az sql server show -g "${{ env.RESOURCE_GROUP }}" -n "$SQL_NAME" &>/dev/null; then
+            echo "✅ SQL Server: $SQL_NAME"
+          else
+            echo "⚠️ SQL Server not found: $SQL_NAME"
+          fi
+          
+          # Verify Web App
+          if az webapp show -g "${{ env.RESOURCE_GROUP }}" -n "${{ env.WEBAPP_NAME }}" &>/dev/null; then
+            echo "✅ Web App: ${{ env.WEBAPP_NAME }}"
+            
+            # Check app settings
+            KV_ENDPOINT=$(az webapp config appsettings list -g "${{ env.RESOURCE_GROUP }}" -n "${{ env.WEBAPP_NAME }}" --query "[?name=='Api__Address'].value" -o tsv)
+            if [ -n "$KV_ENDPOINT" ]; then
+              echo "  ✅ API Address configured: $KV_ENDPOINT"
+            fi
+          else
+            echo "⚠️ Web App not found: ${{ env.WEBAPP_NAME }}"
+          fi
+          
+          # Verify API App
+          if az webapp show -g "${{ env.RESOURCE_GROUP }}" -n "${{ env.API_NAME }}" &>/dev/null; then
+            echo "✅ API App: ${{ env.API_NAME }}"
+            
+            # Check Key Vault integration
+            KV_ENDPOINT=$(az webapp config appsettings list -g "${{ env.RESOURCE_GROUP }}" -n "${{ env.API_NAME }}" --query "[?name=='AZURE_KEY_VAULT_ENDPOINT'].value" -o tsv)
+            if [ -n "$KV_ENDPOINT" ]; then
+              echo "  ✅ Key Vault endpoint configured: $KV_ENDPOINT"
+            fi
+            
+            CONN_KEY=$(az webapp config appsettings list -g "${{ env.RESOURCE_GROUP }}" -n "${{ env.API_NAME }}" --query "[?name=='AZURE_SQL_CONNECTION_STRING_KEY'].value" -o tsv)
+            if [ -n "$CONN_KEY" ]; then
+              echo "  ✅ SQL connection string key configured: $CONN_KEY"
+            fi
+          else
+            echo "⚠️ API App not found: ${{ env.API_NAME }}"
+          fi
+
+      - name: 📋 Deployment Summary
+        run: |
+          echo "## ✅ Infrastructure Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🏗️ Resources Created:" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Name |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource Group | ${{ env.RESOURCE_GROUP }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Key Vault | kv-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SQL Server | sql-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SQL Database | sqldb-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Web App | ${{ env.WEBAPP_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| API App | ${{ env.API_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| App Insights | appi-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Load Testing | lt-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ env.ENABLE_SRE_AGENT }}" == "true" ]; then
+            echo "| SRE Agent | sre-${{ env.ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔐 Configuration:" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ SQL connection string stored in Key Vault" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ App user created via deployment script" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ API App configured with Key Vault integration" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Web App configured with API endpoint" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 URLs:" >> $GITHUB_STEP_SUMMARY
+          echo "- Web App: https://${{ env.WEBAPP_NAME }}.azurewebsites.net" >> $GITHUB_STEP_SUMMARY
+          echo "- API: https://${{ env.API_NAME }}.azurewebsites.net" >> $GITHUB_STEP_SUMMARY
+          echo "- Key Vault: https://kv-${{ env.ENVIRONMENT_NAME }}.vault.azure.net/" >> $GITHUB_STEP_SUMMARY

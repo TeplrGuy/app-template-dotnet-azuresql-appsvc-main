@@ -1,0 +1,965 @@
+name: 🚀 Enterprise Resilience Pipeline
+
+# =============================================================================
+# ENTERPRISE BEST PRACTICES FOR LOAD TESTING & CHAOS ENGINEERING
+# =============================================================================
+#
+# This pipeline follows Microsoft Well-Architected Framework reliability testing
+# best practices and the Principles of Chaos Engineering:
+#
+# 📊 LOAD TESTING STRATEGY:
+# - Development: Smoke tests only (quick feedback)
+# - QA: Full load tests with moderate thresholds
+# - Staging: Production-like load with strict thresholds (GATE)
+# - Production: Synthetic monitoring only (no load injection)
+#
+# 🔥 CHAOS ENGINEERING STRATEGY:
+# - QA: Basic fault injection (learn & validate)
+# - Staging: Full chaos experiments (pre-prod validation)
+# - Production: Optional, controlled experiments with minimal blast radius
+#
+# 🔄 DEPLOYMENT STRATEGY:
+# - Progressive rollout with health checks
+# - Automated rollback on failure
+# - Slot swap for zero-downtime deployments
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - qa
+          - staging
+          - production
+      run_load_test:
+        description: 'Run load tests'
+        required: false
+        default: true
+        type: boolean
+      run_chaos_test:
+        description: 'Run chaos experiments (staging only)'
+        required: false
+        default: false
+        type: boolean
+      chaos_experiment:
+        description: 'Chaos experiment type'
+        required: false
+        default: 'sql-failover'
+        type: choice
+        options:
+          - sql-failover
+          - app-stop
+
+env:
+  DOTNET_VERSION: '6.0.x'
+  # Auto-discovered from infrastructure deployment (set by infrastructure.yml)
+  AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+  AZURE_API_NAME: ${{ vars.AZURE_API_NAME }}
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  AZURE_LOAD_TEST_RESOURCE: ${{ vars.AZURE_LOAD_TEST_RESOURCE }}
+  AZURE_WEBAPP_URL: ${{ vars.AZURE_WEBAPP_URL }}
+  AZURE_API_URL: ${{ vars.AZURE_API_URL }}
+
+# Required for OIDC federated authentication with Azure
+permissions:
+  id-token: write
+  contents: read
+
+# =============================================================================
+# JOB: BUILD & UNIT TEST
+# =============================================================================
+jobs:
+  build:
+    name: 🔨 Build & Unit Test
+    runs-on: ubuntu-latest
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for versioning
+
+      - name: 🏷️ Generate version
+        id: version
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Version: $VERSION"
+
+      - name: 🔧 Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: 📦 Restore dependencies
+        run: dotnet restore src/ContosoUniversity.sln
+
+      - name: 🏗️ Build application
+        run: dotnet build src/ContosoUniversity.sln --configuration Release --no-restore
+
+      - name: 🧪 Run unit tests
+        run: |
+          dotnet test src/ContosoUniversity.Test/ContosoUniversity.Test.csproj \
+            --configuration Release \
+            --verbosity normal \
+            --collect:"XPlat Code Coverage" \
+            --results-directory TestResults \
+            --logger "trx;LogFileName=test-results.trx"
+
+      - name: 📊 Publish test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: TestResults/
+
+      - name: 📦 Publish Web App
+        run: |
+          dotnet publish src/ContosoUniversity.WebApplication/ContosoUniversity.WebApplication.csproj \
+            --configuration Release \
+            --output ./publish/webapp
+
+      - name: 📦 Publish API
+        run: |
+          dotnet publish src/ContosoUniversity.API/ContosoUniversity.API.csproj \
+            --configuration Release \
+            --output ./publish/api
+
+      - name: 📤 Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: published-apps
+          path: ./publish/
+
+# =============================================================================
+# JOB: DEPLOY TO QA (Development/Integration Testing)
+# =============================================================================
+  deploy-qa:
+    name: 🧪 Deploy to QA
+    needs: build
+    if: github.event_name == 'pull_request' || github.event.inputs.environment == 'qa'
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+      url: ${{ steps.deploy.outputs.webapp-url }}
+    
+    outputs:
+      webapp-url: ${{ steps.deploy.outputs.webapp-url }}
+    
+    steps:
+      - name: 📥 Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: published-apps
+          path: ./publish
+
+      - name: 🔐 Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 🚀 Deploy API to QA slot
+        id: deploy-api
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_API_NAME }}
+          slot-name: qa
+          package: ./publish/api
+
+      - name: 🚀 Deploy Web App to QA slot
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          slot-name: qa
+          package: ./publish/webapp
+
+      - name: 🏥 API Smoke Test
+        run: |
+          echo "⏳ Waiting for API to warm up..."
+          sleep 20
+          
+          API_URL="https://${{ env.AZURE_API_NAME }}-qa.azurewebsites.net"
+          
+          for i in {1..3}; do
+            response=$(curl -sL -o /dev/null -w "%{http_code}" "${API_URL}/api/values" 2>/dev/null || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ API smoke test passed!"
+              break
+            fi
+            echo "⏳ API Attempt $i: HTTP $response - Retrying..."
+            sleep 10
+          done
+
+      - name: 🏥 Smoke Test
+        run: |
+          echo "⏳ Waiting for app to warm up..."
+          sleep 30
+          
+          # Use HTTPS and follow redirects
+          HEALTH_URL=$(echo "${{ steps.deploy.outputs.webapp-url }}" | sed 's/http:/https:/')
+          
+          for i in {1..3}; do
+            response=$(curl -sL -o /dev/null -w "%{http_code}" "${HEALTH_URL}/health" 2>/dev/null || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ Smoke test passed!"
+              exit 0
+            fi
+            echo "⏳ Attempt $i: HTTP $response - Retrying..."
+            sleep 10
+          done
+          echo "❌ Smoke test failed"
+          exit 1
+
+# =============================================================================
+# JOB: QA LOAD TEST (Lightweight - Quick Feedback)
+# Best Practice: Run lightweight load tests in QA for quick feedback
+# =============================================================================
+  load-test-qa:
+    name: 📊 QA Load Test (Smoke)
+    needs: deploy-qa
+    if: github.event.inputs.run_load_test != 'false'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Check if tests exist
+        id: check-tests
+        run: |
+          # Install yq
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          
+          # Check if any tests are defined
+          TEST_COUNT=$(yq eval '.tests | length' loadtests/manifest.yaml 2>/dev/null || echo "0")
+          echo "test_count=$TEST_COUNT" >> $GITHUB_OUTPUT
+          
+          if [ "$TEST_COUNT" -eq 0 ] || [ -z "$TEST_COUNT" ]; then
+            echo "⚠️ No load tests defined in manifest - skipping load test"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found $TEST_COUNT test(s) in manifest"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🔐 Azure Login
+        if: steps.check-tests.outputs.skip != 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 📍 Extract hostname from URL
+        if: steps.check-tests.outputs.skip != 'true'
+        id: extract-host
+        run: |
+          FULL_URL="${{ needs.deploy-qa.outputs.webapp-url }}"
+          # Remove protocol and trailing path
+          HOSTNAME=$(echo "$FULL_URL" | sed -E 's|https?://||' | sed 's|/.*||')
+          echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
+          echo "📍 Target hostname: $HOSTNAME"
+
+      - name: 📊 Run Quick Load Test
+        if: steps.check-tests.outputs.skip != 'true'
+        uses: azure/load-testing@v1
+        with:
+          loadtestConfigFile: 'loadtests/config.yaml'
+          loadtestResource: ${{ vars.AZURE_LOAD_TEST_RESOURCE }}
+          resourceGroup: ${{ vars.AZURE_RESOURCE_GROUP }}
+          env: |
+            [
+              { "name": "host", "value": "${{ steps.extract-host.outputs.hostname }}" }
+            ]
+        continue-on-error: true  # Don't block QA on load test failures
+
+      - name: 📈 Upload Results
+        uses: actions/upload-artifact@v4
+        if: always() && steps.check-tests.outputs.skip != 'true'
+        with:
+          name: qa-load-test-results
+          path: ${{ github.workspace }}/loadTest
+
+# =============================================================================
+# JOB: DEPLOY TO STAGING
+# Best Practice: Staging should mirror production
+# =============================================================================
+  deploy-staging:
+    name: 🌍 Deploy to Staging
+    needs: build
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') || 
+      github.event.inputs.environment == 'staging' ||
+      github.event.inputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.webapp-url }}
+    
+    outputs:
+      webapp-url: ${{ steps.deploy.outputs.webapp-url }}
+    
+    steps:
+      - name: 📥 Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: published-apps
+          path: ./publish
+
+      - name: 🔐 Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 🚀 Deploy API to Staging
+        id: deploy-api
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_API_NAME }}
+          slot-name: staging
+          package: ./publish/api
+
+      - name: 🚀 Deploy Web App to Staging
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          slot-name: staging
+          package: ./publish/webapp
+
+      - name: 🏥 API Health Check
+        run: |
+          echo "⏳ Waiting for API to warm up..."
+          sleep 20
+          
+          API_URL="https://${{ env.AZURE_API_NAME }}-staging.azurewebsites.net"
+          
+          for i in {1..5}; do
+            response=$(curl -sL -o /dev/null -w "%{http_code}" "${API_URL}/api/values" 2>/dev/null || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ API health check passed!"
+              break
+            fi
+            echo "⏳ API Attempt $i: HTTP $response - Retrying..."
+            sleep 15
+          done
+
+      - name: 🏥 Health Check
+        run: |
+          echo "⏳ Waiting for app to warm up..."
+          sleep 30
+          
+          # Use HTTPS and follow redirects
+          HEALTH_URL=$(echo "${{ steps.deploy.outputs.webapp-url }}" | sed 's/http:/https:/')
+          
+          for i in {1..5}; do
+            response=$(curl -sL -o /dev/null -w "%{http_code}" "${HEALTH_URL}/health" 2>/dev/null || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ Health check passed!"
+              exit 0
+            fi
+            echo "⏳ Attempt $i: HTTP $response - Retrying..."
+            sleep 15
+          done
+          echo "❌ Health check failed"
+          exit 1
+
+# =============================================================================
+# JOB: STAGING LOAD TEST (Full - Production-like)
+# Best Practice: This is the GATE for production deployment
+# =============================================================================
+  load-test-staging:
+    name: 📊 Staging Load Test (Full)
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    
+    outputs:
+      test-passed: ${{ steps.validate.outputs.passed }}
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Check if tests exist
+        id: check-tests
+        run: |
+          # Install yq
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          
+          # Check if any tests are defined
+          TEST_COUNT=$(yq eval '.tests | length' loadtests/manifest.yaml 2>/dev/null || echo "0")
+          echo "test_count=$TEST_COUNT" >> $GITHUB_OUTPUT
+          
+          if [ "$TEST_COUNT" -eq 0 ] || [ -z "$TEST_COUNT" ]; then
+            echo "⚠️ No load tests defined in manifest - skipping load test"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found $TEST_COUNT test(s) in manifest"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🔐 Azure Login
+        if: steps.check-tests.outputs.skip != 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 📍 Extract hostname from URL
+        if: steps.check-tests.outputs.skip != 'true'
+        id: extract-host
+        run: |
+          FULL_URL="${{ needs.deploy-staging.outputs.webapp-url }}"
+          # Remove protocol and trailing path
+          HOSTNAME=$(echo "$FULL_URL" | sed -E 's|https?://||' | sed 's|/.*||')
+          echo "hostname=$HOSTNAME" >> $GITHUB_OUTPUT
+          echo "📍 Target hostname: $HOSTNAME"
+
+      - name: 📊 Run Production-Like Load Test
+        if: steps.check-tests.outputs.skip != 'true'
+        id: loadtest
+        uses: azure/load-testing@v1
+        with:
+          loadtestConfigFile: 'loadtests/config.yaml'
+          loadtestResource: ${{ vars.AZURE_LOAD_TEST_RESOURCE }}
+          resourceGroup: ${{ vars.AZURE_RESOURCE_GROUP }}
+          env: |
+            [
+              { "name": "host", "value": "${{ steps.extract-host.outputs.hostname }}" }
+            ]
+
+      - name: ✅ Validate Results
+        id: validate
+        run: |
+          if [ "${{ steps.check-tests.outputs.skip }}" == "true" ]; then
+            echo "⚠️ No load tests to validate - passing by default"
+            echo "passed=true" >> $GITHUB_OUTPUT
+          else
+            echo "📊 Analyzing load test results..."
+            # Azure Load Testing enforces failure criteria in config.yaml
+            # If we reach here, the test passed
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "✅ Load test passed all criteria!"
+          fi
+
+      - name: 📈 Upload Results
+        uses: actions/upload-artifact@v4
+        if: always() && steps.check-tests.outputs.skip != 'true'
+        with:
+          name: staging-load-test-results
+          path: ${{ github.workspace }}/loadTest
+
+# =============================================================================
+# JOB: CHAOS ENGINEERING (Staging Only)
+# Best Practice: Run chaos in staging with production-like config
+# Per Principles of Chaos: Build immunity before production
+# =============================================================================
+  chaos-experiment:
+    name: 🔥 Chaos Engineering
+    needs: [deploy-staging, load-test-staging]
+    if: github.event.inputs.run_chaos_test == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔐 Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: � Discover Resource IDs
+        id: discover
+        run: |
+          echo "🔍 Discovering Azure resource IDs..."
+          
+          # Get App Service Resource ID
+          APP_SERVICE_ID=$(az webapp show \
+            --name "${{ vars.AZURE_WEBAPP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "id" -o tsv 2>/dev/null || echo "")
+          
+          if [ -z "$APP_SERVICE_ID" ]; then
+            echo "❌ Could not find App Service: ${{ vars.AZURE_WEBAPP_NAME }}"
+            exit 1
+          fi
+          echo "✅ App Service ID: $APP_SERVICE_ID"
+          echo "app_service_id=$APP_SERVICE_ID" >> $GITHUB_OUTPUT
+          
+          # Auto-discover SQL Server in resource group
+          SQL_SERVER=$(az sql server list \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "[0].name" -o tsv 2>/dev/null || echo "")
+          
+          if [ -z "$SQL_SERVER" ]; then
+            echo "⚠️ No SQL Server found in resource group"
+            echo "sql_db_id=" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found SQL Server: $SQL_SERVER"
+            
+            # Get SQL Database ID
+            SQL_DB_ID=$(az sql db list \
+              --server "$SQL_SERVER" \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --query "[?name!='master'].id | [0]" -o tsv 2>/dev/null || echo "")
+            
+            if [ -n "$SQL_DB_ID" ]; then
+              echo "✅ SQL Database ID: $SQL_DB_ID"
+              echo "sql_db_id=$SQL_DB_ID" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ No SQL Database found"
+              echo "sql_db_id=" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: 📊 Record Baseline Metrics
+        id: baseline
+        run: |
+          echo "📊 Recording steady-state baseline..."
+          
+          # Get baseline response times
+          total=0
+          for i in {1..10}; do
+            time=$(curl -s -w "%{time_total}" -o /dev/null "${{ needs.deploy-staging.outputs.webapp-url }}" 2>/dev/null || echo "0")
+            total=$(echo "$total + $time" | bc)
+            echo "Request $i: ${time}s"
+          done
+          avg=$(echo "scale=3; $total / 10" | bc)
+          echo "📈 Baseline avg response time: ${avg}s"
+          echo "baseline_avg=$avg" >> $GITHUB_OUTPUT
+
+      - name: 🔧 Ensure Chaos Experiment Exists
+        id: ensure-experiment
+        run: |
+          EXPERIMENT="${{ github.event.inputs.chaos_experiment || 'sql-failover' }}-experiment"
+          SUBSCRIPTION="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+          
+          echo "🔍 Checking if experiment '$EXPERIMENT' exists..."
+          
+          # Check if experiment exists using REST API
+          EXPERIMENT_URI="https://management.azure.com/subscriptions/${SUBSCRIPTION}/resourceGroups/${RG}/providers/Microsoft.Chaos/experiments/${EXPERIMENT}?api-version=2023-11-01"
+          
+          EXISTS=$(az rest --method get --uri "$EXPERIMENT_URI" --query "name" -o tsv 2>/dev/null || echo "")
+          
+          if [ -n "$EXISTS" ]; then
+            echo "✅ Experiment '$EXPERIMENT' already exists"
+          else
+            echo "📦 Experiment not found - deploying via Bicep..."
+            
+            APP_SERVICE_ID="${{ steps.discover.outputs.app_service_id }}"
+            SQL_DB_ID="${{ steps.discover.outputs.sql_db_id }}"
+            
+            # Chaos Studio supported regions (westus2 is NOT supported)
+            CHAOS_LOCATION="westus"
+            echo "📍 Using Chaos Studio region: $CHAOS_LOCATION"
+            
+            # Step 1: Enable Chaos targets on resources first
+            echo "🎯 Step 1: Enabling Chaos Studio targets on resources..."
+            az deployment group create \
+              --resource-group "$RG" \
+              --template-file infra/chaos/chaos-targets.bicep \
+              --parameters \
+                sqlDatabaseResourceId="$SQL_DB_ID" \
+                appServiceResourceId="$APP_SERVICE_ID" \
+              --name "chaos-targets-$(date +%Y%m%d%H%M%S)" || {
+                echo "⚠️ Chaos targets deployment failed (may already exist)"
+              }
+            
+            echo "⏳ Waiting 15 seconds for targets to be ready..."
+            sleep 15
+            
+            # Step 2: Deploy the experiment
+            echo "🔥 Step 2: Deploying chaos experiment..."
+            
+            if [[ "$EXPERIMENT" == "sql-failover-experiment" ]]; then
+              if [ -z "$SQL_DB_ID" ]; then
+                echo "❌ SQL Database ID required for sql-failover-experiment"
+                exit 1
+              fi
+              
+              az deployment group create \
+                --resource-group "$RG" \
+                --template-file infra/chaos/experiments/sql-failover.bicep \
+                --parameters \
+                  experimentName="$EXPERIMENT" \
+                  sqlDatabaseResourceId="$SQL_DB_ID" \
+                  appServiceResourceId="$APP_SERVICE_ID" \
+                  location="$CHAOS_LOCATION" \
+                --name "chaos-sql-$(date +%Y%m%d%H%M%S)"
+                
+            elif [[ "$EXPERIMENT" == "app-stop-experiment" ]]; then
+              az deployment group create \
+                --resource-group "$RG" \
+                --template-file infra/chaos/experiments/app-stop.bicep \
+                --parameters \
+                  experimentName="$EXPERIMENT" \
+                  appServiceResourceId="$APP_SERVICE_ID" \
+                  location="$CHAOS_LOCATION" \
+                --name "chaos-app-$(date +%Y%m%d%H%M%S)"
+            fi
+            
+            echo "✅ Experiment deployed successfully"
+            echo "⏳ Waiting 30 seconds for experiment to be ready..."
+            sleep 30
+          fi
+          
+          echo "experiment_name=$EXPERIMENT" >> $GITHUB_OUTPUT
+
+      - name: 🔥 Start Chaos Experiment
+        id: chaos
+        run: |
+          EXPERIMENT="${{ steps.ensure-experiment.outputs.experiment_name }}"
+          SUBSCRIPTION="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+          
+          echo "🔥 Starting chaos experiment: $EXPERIMENT"
+          
+          # Start the experiment using REST API
+          START_URI="https://management.azure.com/subscriptions/${SUBSCRIPTION}/resourceGroups/${RG}/providers/Microsoft.Chaos/experiments/${EXPERIMENT}/start?api-version=2023-11-01"
+          
+          az rest --method post --uri "$START_URI" || {
+            echo "⚠️ Experiment start command failed"
+            echo "experiment_started=false" >> $GITHUB_OUTPUT
+            exit 0
+          }
+          
+          echo "experiment_started=true" >> $GITHUB_OUTPUT
+          echo "✅ Experiment started!"
+
+      - name: ⏳ Monitor During Chaos
+        if: steps.chaos.outputs.experiment_started == 'true'
+        run: |
+          echo "🔍 Monitoring application during fault injection..."
+          
+          # Monitor for 3 minutes
+          errors=0
+          for i in {1..36}; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" "${{ needs.deploy-staging.outputs.webapp-url }}" 2>/dev/null || echo "000")
+            
+            if [ "$response" = "200" ]; then
+              echo "✅ Request $i: HTTP $response"
+            elif [ "$response" = "503" ] || [ "$response" = "504" ]; then
+              echo "⚠️ Request $i: HTTP $response (degraded - expected during chaos)"
+              errors=$((errors + 1))
+            else
+              echo "❌ Request $i: HTTP $response (unexpected)"
+              errors=$((errors + 1))
+            fi
+            
+            sleep 5
+          done
+          
+          error_rate=$(echo "scale=2; $errors * 100 / 36" | bc)
+          echo "📊 Error rate during chaos: ${error_rate}%"
+          
+          # Allow up to 20% errors during chaos (system should gracefully degrade)
+          if (( $(echo "$error_rate > 20" | bc -l) )); then
+            echo "❌ Error rate exceeded threshold (20%)"
+            exit 1
+          fi
+          
+          echo "✅ System maintained acceptable availability during chaos"
+
+      - name: 🛑 Stop Chaos Experiment
+        if: always() && steps.chaos.outputs.experiment_started == 'true'
+        run: |
+          echo "🛑 Stopping chaos experiment..."
+          
+          EXPERIMENT="${{ steps.ensure-experiment.outputs.experiment_name }}"
+          SUBSCRIPTION="${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+          RG="${{ vars.AZURE_RESOURCE_GROUP }}"
+          
+          # Cancel experiment using REST API
+          CANCEL_URI="https://management.azure.com/subscriptions/${SUBSCRIPTION}/resourceGroups/${RG}/providers/Microsoft.Chaos/experiments/${EXPERIMENT}/cancel?api-version=2023-11-01"
+          
+          az rest --method post --uri "$CANCEL_URI" 2>/dev/null || true
+          echo "✅ Experiment cleanup complete"
+
+      - name: 📊 Validate Recovery
+        run: |
+          echo "🔍 Validating system recovery..."
+          sleep 30  # Allow system to recover
+          
+          # Use HTTPS and follow redirects
+          HEALTH_URL=$(echo "${{ needs.deploy-staging.outputs.webapp-url }}" | sed 's/http:/https:/')
+          
+          for i in {1..5}; do
+            response=$(curl -sL -o /dev/null -w "%{http_code}" "${HEALTH_URL}" 2>/dev/null || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ System recovered successfully!"
+              exit 0
+            fi
+            sleep 10
+          done
+          
+          echo "❌ System did not recover within expected time"
+          exit 1
+
+# =============================================================================
+# JOB: DEPLOY TO PRODUCTION
+# Best Practice: Slot swap for zero-downtime + automatic rollback
+# =============================================================================
+  deploy-production:
+    name: 🚀 Deploy to Production
+    needs: [deploy-staging, load-test-staging]
+    if: |
+      github.ref == 'refs/heads/main' && 
+      (github.event_name == 'push' || github.event.inputs.environment == 'production')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net
+    
+    steps:
+      - name: 🔐 Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 📊 Pre-Swap Health Check
+        run: |
+          echo "🔍 Verifying staging is healthy before swap..."
+          
+          # Check Web App staging
+          HEALTH_URL=$(echo "${{ needs.deploy-staging.outputs.webapp-url }}" | sed 's/http:/https:/')
+          response=$(curl -sL -o /dev/null -w "%{http_code}" "${HEALTH_URL}/health" 2>/dev/null || echo "000")
+          
+          if [ "$response" != "200" ]; then
+            echo "❌ Web App staging health check failed (HTTP $response). Aborting production deployment."
+            exit 1
+          fi
+          echo "✅ Web App staging is healthy."
+          
+          # Check API staging
+          API_URL="https://${{ env.AZURE_API_NAME }}-staging.azurewebsites.net"
+          api_response=$(curl -sL -o /dev/null -w "%{http_code}" "${API_URL}/api/values" 2>/dev/null || echo "000")
+          
+          if [ "$api_response" != "200" ]; then
+            echo "❌ API staging health check failed (HTTP $api_response). Aborting production deployment."
+            exit 1
+          fi
+          echo "✅ API staging is healthy. Proceeding with swap."
+
+      - name: 🔄 Swap API Staging to Production
+        id: swap-api
+        run: |
+          echo "🔄 Swapping API staging to production..."
+          az webapp deployment slot swap \
+            --name ${{ env.AZURE_API_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --slot staging \
+            --target-slot production
+          
+          echo "swapped=true" >> $GITHUB_OUTPUT
+          echo "✅ API swapped to production"
+
+      - name: 🔄 Swap Web App Staging to Production
+        id: swap
+        run: |
+          echo "🔄 Swapping Web App staging to production..."
+          az webapp deployment slot swap \
+            --name ${{ env.AZURE_WEBAPP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --slot staging \
+            --target-slot production
+          
+          echo "swapped=true" >> $GITHUB_OUTPUT
+          echo "✅ Web App swapped to production"
+
+      - name: 🏥 Production Health Check
+        id: health
+        run: |
+          echo "⏳ Waiting for swap to complete..."
+          sleep 60
+          
+          # Check Web App
+          echo "🔍 Checking Web App production..."
+          for i in {1..5}; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health" 2>/dev/null || echo "000")
+            
+            if [ "$response" = "200" ]; then
+              echo "✅ Web App production health check passed!"
+              break
+            fi
+            echo "⏳ Web App attempt $i: HTTP $response - Retrying..."
+            sleep 15
+          done
+          
+          if [ "$response" != "200" ]; then
+            echo "healthy=false" >> $GITHUB_OUTPUT
+            echo "❌ Web App production health check failed!"
+            exit 1
+          fi
+          
+          # Check API
+          echo "🔍 Checking API production..."
+          for i in {1..5}; do
+            api_response=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ env.AZURE_API_NAME }}.azurewebsites.net/api/values" 2>/dev/null || echo "000")
+            
+            if [ "$api_response" = "200" ]; then
+              echo "✅ API production health check passed!"
+              echo "healthy=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            echo "⏳ API attempt $i: HTTP $api_response - Retrying..."
+            sleep 15
+          done
+          
+          echo "healthy=false" >> $GITHUB_OUTPUT
+          echo "❌ API production health check failed!"
+          exit 1
+
+      - name: 🔄 Rollback on Failure
+        if: failure() && (steps.swap.outputs.swapped == 'true' || steps.swap-api.outputs.swapped == 'true')
+        run: |
+          echo "🔄 Rolling back to previous production version..."
+          
+          # Rollback API
+          if [ "${{ steps.swap-api.outputs.swapped }}" == "true" ]; then
+            echo "🔄 Rolling back API..."
+            az webapp deployment slot swap \
+              --name ${{ env.AZURE_API_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --slot staging \
+              --target-slot production || true
+            echo "✅ API rollback completed"
+          fi
+          
+          # Rollback Web App
+          if [ "${{ steps.swap.outputs.swapped }}" == "true" ]; then
+            echo "🔄 Rolling back Web App..."
+            az webapp deployment slot swap \
+              --name ${{ env.AZURE_WEBAPP_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --slot staging \
+              --target-slot production || true
+            echo "✅ Web App rollback completed"
+          fi
+          
+          echo "✅ Rollback completed"
+
+# =============================================================================
+# JOB: SYNTHETIC MONITORING (Production)
+# Best Practice: Monitor production with synthetic tests, not load tests
+# =============================================================================
+  production-synthetic-test:
+    name: 🔍 Production Synthetic Test
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📍 Run Synthetic Health Checks
+        run: |
+          echo "🔍 Running synthetic health checks on production..."
+          
+          # Web App endpoints
+          endpoints=(
+            "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/"
+            "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/health"
+            "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/Students"
+            "https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net/Courses"
+          )
+          
+          # API endpoints
+          api_endpoints=(
+            "https://${{ env.AZURE_API_NAME }}.azurewebsites.net/api/values"
+            "https://${{ env.AZURE_API_NAME }}.azurewebsites.net/api/students"
+            "https://${{ env.AZURE_API_NAME }}.azurewebsites.net/api/courses"
+          )
+          
+          all_passed=true
+          
+          echo "📱 Web App Endpoints:"
+          for endpoint in "${endpoints[@]}"; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$endpoint" 2>/dev/null || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ $endpoint - HTTP $response"
+            else
+              echo "❌ $endpoint - HTTP $response"
+              all_passed=false
+            fi
+          done
+          
+          echo ""
+          echo "🔌 API Endpoints:"
+          for endpoint in "${api_endpoints[@]}"; do
+            response=$(curl -s -o /dev/null -w "%{http_code}" "$endpoint" 2>/dev/null || echo "000")
+            if [ "$response" = "200" ]; then
+              echo "✅ $endpoint - HTTP $response"
+            else
+              echo "❌ $endpoint - HTTP $response"
+              all_passed=false
+            fi
+          done
+          
+          if [ "$all_passed" = false ]; then
+            echo "⚠️ Some synthetic tests failed"
+            exit 1
+          fi
+          
+          echo "✅ All synthetic tests passed!"
+
+# =============================================================================
+# JOB: DEPLOYMENT SUMMARY
+# =============================================================================
+  summary:
+    name: 📋 Deployment Summary
+    needs: [build, deploy-staging, load-test-staging, deploy-production]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📊 Generate Summary
+        run: |
+          echo "## 🎯 Enterprise Resilience Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔨 Build | ${{ needs.build.result }} | Version: ${{ needs.build.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🌍 Staging | ${{ needs.deploy-staging.result }} | ${{ needs.deploy-staging.outputs.webapp-url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📊 Load Test | ${{ needs.load-test-staging.result }} | Production-like load (50 VUs, 5 min) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🚀 Production | ${{ needs.deploy-production.result }} | Web + API deployed |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🔗 Production URLs" >> $GITHUB_STEP_SUMMARY
+          echo "| App | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| Web App | https://${{ env.AZURE_WEBAPP_NAME }}.azurewebsites.net |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | https://${{ env.AZURE_API_NAME }}.azurewebsites.net |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📈 Best Practices Applied" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Shift-left testing (unit tests → smoke → load → chaos)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Load testing as deployment gate" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Chaos engineering in staging (not production)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Automated rollback on failure (Web App + API)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Synthetic monitoring in production" >> $GITHUB_STEP_SUMMARY

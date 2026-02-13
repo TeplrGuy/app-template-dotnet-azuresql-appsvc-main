@@ -1,0 +1,306 @@
+name: 🧪 Load Testing (Auto-Discovery)
+
+# =============================================================================
+# AUTO-DISCOVERING LOAD TEST PIPELINE
+# =============================================================================
+# This workflow automatically discovers tests from loadtests/manifest.yaml
+# All tests use the shared template: loadtests/templates/http-test.jmx
+# 
+# TRIGGERS:
+# - On push/PR to main when loadtests/ folder or this workflow changes
+# - Manual trigger via workflow_dispatch
+# =============================================================================
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'loadtests/**'
+      - '.github/workflows/load-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'loadtests/**'
+      - '.github/workflows/load-test.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - qa
+          - staging
+          - perf
+      test_profile:
+        description: 'Test profile to run'
+        required: true
+        default: 'smoke'
+        type: choice
+        options:
+          - smoke
+          - load
+          - stress
+          - chaos
+      test_ids:
+        description: 'Test IDs (comma-separated) or "all"'
+        required: false
+        default: 'all'
+        type: string
+      chaos_experiment:
+        description: 'Chaos experiment to run alongside (optional)'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # Auto-discovered from infrastructure deployment (set by infrastructure.yml)
+  LOAD_TEST_RESOURCE: ${{ vars.AZURE_LOAD_TEST_RESOURCE }}
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+  WEBAPP_URL: ${{ vars.AZURE_WEBAPP_URL }}
+
+jobs:
+  # ===========================================================================
+  # DISCOVER TESTS FROM MANIFEST
+  # ===========================================================================
+  discover-tests:
+    name: 📋 Discover Tests
+    runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.parse-manifest.outputs.tests }}
+      test_count: ${{ steps.parse-manifest.outputs.test_count }}
+      profile_users: ${{ steps.parse-manifest.outputs.users }}
+      profile_duration: ${{ steps.parse-manifest.outputs.duration }}
+      profile_rampup: ${{ steps.parse-manifest.outputs.rampup }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: 🔧 Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+      
+      - name: 📋 Parse Test Manifest
+        id: parse-manifest
+        run: |
+          # Determine profile based on trigger
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            PROFILE="smoke"
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            PROFILE="load"
+          else
+            PROFILE="${{ inputs.test_profile }}"
+          fi
+          
+          TEST_IDS="${{ inputs.test_ids || 'all' }}"
+          
+          echo "🔍 Discovering tests for profile: $PROFILE"
+          
+          # Get profile settings
+          USERS=$(yq eval ".profiles.$PROFILE.concurrentUsers // 10" loadtests/manifest.yaml)
+          DURATION=$(yq eval ".profiles.$PROFILE.durationSeconds // 60" loadtests/manifest.yaml)
+          RAMP_UP=$(yq eval ".profiles.$PROFILE.rampUpSeconds // 10" loadtests/manifest.yaml)
+          
+          echo "users=$USERS" >> $GITHUB_OUTPUT
+          echo "duration=$DURATION" >> $GITHUB_OUTPUT
+          echo "rampup=$RAMP_UP" >> $GITHUB_OUTPUT
+          
+          echo "📊 Profile Settings: $USERS users, ${DURATION}s duration"
+          
+          # Get tests
+          if [ "$TEST_IDS" == "all" ]; then
+            TESTS=$(yq eval ".tests[] | select(.enabled == true) | select(.profiles[] == \"$PROFILE\") | .id" loadtests/manifest.yaml 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "")
+          else
+            TESTS="$TEST_IDS"
+          fi
+          
+          # Handle no tests found
+          if [ -z "$TESTS" ]; then
+            echo "⚠️ No tests found for profile: $PROFILE"
+            echo "tests=[]" >> $GITHUB_OUTPUT
+            echo "test_count=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "🧪 Tests to run: $TESTS"
+          
+          # Build JSON array
+          TEST_ARRAY="["
+          FIRST=true
+          TEST_COUNT=0
+          
+          for TEST_ID in $(echo $TESTS | tr ',' ' '); do
+            [ -z "$TEST_ID" ] && continue
+            
+            # Check if test exists in manifest
+            TEST_EXISTS=$(yq eval ".tests[] | select(.id == \"$TEST_ID\") | .id" loadtests/manifest.yaml 2>/dev/null)
+            if [ -z "$TEST_EXISTS" ]; then
+              echo "⚠️ Test '$TEST_ID' not found in manifest, skipping..."
+              continue
+            fi
+            
+            if [ "$FIRST" = false ]; then TEST_ARRAY+=","; fi
+            FIRST=false
+            TEST_COUNT=$((TEST_COUNT + 1))
+            
+            NAME=$(yq eval ".tests[] | select(.id == \"$TEST_ID\") | .name // \"$TEST_ID\"" loadtests/manifest.yaml)
+            JMETER=$(yq eval ".tests[] | select(.id == \"$TEST_ID\") | .jmeterFile // \"templates/http-test.jmx\"" loadtests/manifest.yaml)
+            
+            TEST_ARRAY+="{\"id\":\"$TEST_ID\",\"name\":\"$NAME\",\"jmeter\":\"$JMETER\"}"
+          done
+          
+          TEST_ARRAY+="]"
+          
+          echo "tests=$TEST_ARRAY" >> $GITHUB_OUTPUT
+          echo "test_count=$TEST_COUNT" >> $GITHUB_OUTPUT
+          
+          if [ $TEST_COUNT -eq 0 ]; then
+            echo "⚠️ No valid tests to run"
+          else
+            echo "📊 Discovered $TEST_COUNT test(s)"
+          fi
+
+  # ===========================================================================
+  # RUN LOAD TESTS
+  # ===========================================================================
+  run-tests:
+    name: 🧪 ${{ matrix.test.name }}
+    needs: discover-tests
+    if: needs.discover-tests.outputs.test_count > 0
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test: ${{ fromJson(needs.discover-tests.outputs.tests) }}
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 🔐 Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - name: 🌐 Set Environment URL
+        id: env-url
+        run: |
+          ENV="${{ inputs.environment || 'dev' }}"
+          case "$ENV" in
+            dev)     URL="${{ vars.DEV_APP_URL }}" ;;
+            qa)      URL="${{ vars.QA_APP_URL }}" ;;
+            staging) URL="${{ vars.STAGING_APP_URL }}" ;;
+            perf)    URL="${{ vars.PERF_APP_URL }}" ;;
+            *)       URL="${{ vars.DEV_APP_URL }}" ;;
+          esac
+          [ -z "$URL" ] && URL="https://${{ vars.AZURE_WEBAPP_NAME }}.azurewebsites.net"
+          echo "url=$URL" >> $GITHUB_OUTPUT
+      
+      - name: 📝 Generate Dynamic Config
+        run: |
+          # Ensure JMeter file path is correct (relative paths from loadtests folder)
+          JMETER_FILE="${{ matrix.test.jmeter }}"
+          TEST_ID="${{ matrix.test.id }}"
+          DISPLAY_NAME="${{ matrix.test.name }}"
+          WEBAPP_URL="${{ steps.env-url.outputs.url }}"
+          USERS="${{ needs.discover-tests.outputs.profile_users }}"
+          DURATION="${{ needs.discover-tests.outputs.profile_duration }}"
+          RAMPUP="${{ needs.discover-tests.outputs.profile_rampup }}"
+          RUN_ID="${{ github.run_id }}"
+          
+          # Extract hostname from URL (remove https:// prefix)
+          HOST=$(echo "$WEBAPP_URL" | sed 's|https://||' | sed 's|http://||' | sed 's|/.*||')
+          echo "🌐 Target host: $HOST"
+          
+          # Check if JMeter file exists
+          if [ ! -f "loadtests/$JMETER_FILE" ]; then
+            echo "❌ JMeter file not found: loadtests/$JMETER_FILE"
+            ls -la loadtests/
+            ls -la loadtests/templates/ || true
+            exit 1
+          fi
+          
+          echo "✅ Found JMeter file: loadtests/$JMETER_FILE"
+          
+          # Generate config without leading spaces (critical for YAML parsing)
+          cat > loadtests/dynamic-config.yaml <<EOF
+          version: v0.1
+          testId: ${TEST_ID}-${RUN_ID}
+          displayName: "${DISPLAY_NAME}"
+          testPlan: ${JMETER_FILE}
+          engineInstances: 1
+          failureCriteria:
+            - avg(response_time_ms) > 2000
+            - percentage(error) > 1
+            - p95(response_time_ms) > 3000
+          env:
+            - name: host
+              value: "${HOST}"
+          EOF
+          
+          # Remove leading whitespace from each line (heredoc indentation fix)
+          sed -i 's/^          //' loadtests/dynamic-config.yaml
+          
+          echo "📄 Generated config:"
+          cat loadtests/dynamic-config.yaml
+
+      - name: 🔥 Start Chaos Experiment
+        if: inputs.chaos_experiment != ''
+        id: chaos
+        run: |
+          echo "🔥 Starting chaos experiment: ${{ inputs.chaos_experiment }}"
+          sleep 60  # Wait for baseline
+          az chaos experiment start \
+            --name "${{ inputs.chaos_experiment }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --subscription "${{ secrets.AZURE_SUBSCRIPTION_ID }}" \
+            --no-wait || true
+          echo "chaos_started=true" >> $GITHUB_OUTPUT
+
+      - name: 🧪 Run Azure Load Test
+        uses: azure/load-testing@v1
+        with:
+          loadtestConfigFile: 'loadtests/dynamic-config.yaml'
+          loadtestResource: ${{ env.LOAD_TEST_RESOURCE }}
+          resourceGroup: ${{ env.RESOURCE_GROUP }}
+
+      - name: 🛑 Stop Chaos Experiment
+        if: always() && steps.chaos.outputs.chaos_started == 'true'
+        run: |
+          az chaos experiment cancel \
+            --name "${{ inputs.chaos_experiment }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" || true
+
+      - name: 📤 Upload Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadtest-${{ matrix.test.id }}
+          path: ${{ github.workspace }}/loadTest
+
+  # ===========================================================================
+  # SUMMARY
+  # ===========================================================================
+  summary:
+    name: 📊 Summary
+    needs: [discover-tests, run-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📊 Generate Summary
+        run: |
+          echo "# 📊 Load Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tests Run:** ${{ needs.discover-tests.outputs.test_count }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Profile:** ${{ inputs.test_profile || 'auto' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "View detailed results in the Azure Load Testing portal." >> $GITHUB_STEP_SUMMARY

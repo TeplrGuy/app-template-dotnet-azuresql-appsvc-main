@@ -1,0 +1,164 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "14505058838639338873"
+    }
+  },
+  "parameters": {
+    "userAssignedIdentityPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Principal ID of the user-assigned managed identity"
+      }
+    },
+    "systemAssignedIdentityPrincipalId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Principal ID of the system-assigned managed identity (from the SRE Agent)"
+      }
+    },
+    "accessLevel": {
+      "type": "string",
+      "defaultValue": "High",
+      "allowedValues": [
+        "High",
+        "Low"
+      ],
+      "metadata": {
+        "description": "Access level: High grants Contributor + Reader, Low grants Reader only"
+      }
+    },
+    "webAppId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Web App (frontend)"
+      }
+    },
+    "apiAppId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the API App (backend)"
+      }
+    },
+    "appInsightsId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Application Insights instance"
+      }
+    },
+    "logAnalyticsId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the Log Analytics workspace"
+      }
+    }
+  },
+  "variables": {
+    "readerRoleId": "acdd72a7-3385-48ef-bd42-f606fba81ae7",
+    "contributorRoleId": "b24988ac-6180-42a0-ab88-20f7382dd24c",
+    "logAnalyticsReaderRoleId": "92aaf0da-9dab-42b6-94a3-d43ce8d16293",
+    "appInsightsContributorRoleId": "ae349356-3a1b-4a5e-921d-050484c6347e"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('webAppId'), parameters('userAssignedIdentityPrincipalId'), variables('readerRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId": "[parameters('userAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('apiAppId'), parameters('userAssignedIdentityPrincipalId'), variables('readerRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId": "[parameters('userAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('appInsightsId'), parameters('userAssignedIdentityPrincipalId'), variables('readerRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId": "[parameters('userAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('logAnalyticsId'), parameters('userAssignedIdentityPrincipalId'), variables('logAnalyticsReaderRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('logAnalyticsReaderRoleId'))]",
+        "principalId": "[parameters('userAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "condition": "[equals(parameters('accessLevel'), 'High')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('appInsightsId'), parameters('userAssignedIdentityPrincipalId'), variables('appInsightsContributorRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('appInsightsContributorRoleId'))]",
+        "principalId": "[parameters('userAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "condition": "[equals(parameters('accessLevel'), 'High')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('webAppId'), parameters('userAssignedIdentityPrincipalId'), variables('contributorRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('contributorRoleId'))]",
+        "principalId": "[parameters('userAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "condition": "[equals(parameters('accessLevel'), 'High')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('apiAppId'), parameters('userAssignedIdentityPrincipalId'), variables('contributorRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('contributorRoleId'))]",
+        "principalId": "[parameters('userAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "condition": "[not(empty(parameters('systemAssignedIdentityPrincipalId')))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('appInsightsId'), parameters('systemAssignedIdentityPrincipalId'), variables('readerRoleId'), 'system')]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('readerRoleId'))]",
+        "principalId": "[parameters('systemAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "condition": "[not(empty(parameters('systemAssignedIdentityPrincipalId')))]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(parameters('appInsightsId'), parameters('systemAssignedIdentityPrincipalId'), variables('appInsightsContributorRoleId'), 'system')]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('appInsightsContributorRoleId'))]",
+        "principalId": "[parameters('systemAssignedIdentityPrincipalId')]",
+        "principalType": "ServicePrincipal"
+      }
+    }
+  ]
+}

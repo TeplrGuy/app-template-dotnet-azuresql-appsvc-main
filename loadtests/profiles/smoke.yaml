@@ -1,0 +1,22 @@
+# Smoke Test Profile - Run on every PR/Dev deployment
+# Purpose: Quick validation that app handles minimal load
+# Duration: ~2 minutes
+
+profile: smoke
+description: Quick smoke test for PR validation
+
+parameters:
+  concurrent_users: 10
+  duration_seconds: 120
+  ramp_up_seconds: 30
+  engine_instances: 1
+
+# Relaxed criteria for smoke tests
+failureCriteria:
+  - avg(response_time_ms) > 3000
+  - percentage(error) > 5
+
+expectedOutcome:
+  - Application responds under minimal load
+  - No critical errors or crashes
+  - Baseline response times established
