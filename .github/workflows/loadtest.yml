@@ -1,0 +1,55 @@
+name: Load Test (US2)
+
+on:
+  workflow_dispatch:
+    inputs:
+      webapp_url:
+        description: 'Target base URL (e.g., https://myapp.azurewebsites.net)'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  loadtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required repo variables
+        run: |
+          MISSING=""
+          [ -z "${{ vars.AZURE_CLIENT_ID }}" ] && MISSING="$MISSING AZURE_CLIENT_ID"
+          [ -z "${{ vars.AZURE_TENANT_ID }}" ] && MISSING="$MISSING AZURE_TENANT_ID"
+          [ -z "${{ vars.AZURE_SUBSCRIPTION_ID }}" ] && MISSING="$MISSING AZURE_SUBSCRIPTION_ID"
+          [ -z "${{ vars.AZURE_LOAD_TEST_RESOURCE }}" ] && MISSING="$MISSING AZURE_LOAD_TEST_RESOURCE"
+          [ -z "${{ vars.AZURE_RESOURCE_GROUP }}" ] && MISSING="$MISSING AZURE_RESOURCE_GROUP"
+          if [ -n "$MISSING" ]; then
+            echo "Missing required vars:$MISSING"
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Generate config with target host
+        id: cfg
+        run: |
+          URL="${{ inputs.webapp_url }}"
+          HOST=$(echo "$URL" | sed 's|https\?://||' | sed 's|/.*||')
+          cp loadtests/config.yaml loadtests/ci-config.yaml
+          sed -i "s/\${HOST:-localhost}/$HOST/g" loadtests/ci-config.yaml
+          echo "host=$HOST" >> $GITHUB_OUTPUT
+          echo "config=loadtests/ci-config.yaml" >> $GITHUB_OUTPUT
+
+      - name: Run Azure Load Test
+        uses: azure/load-testing@v1
+        with:
+          loadTestConfigFile: ${{ steps.cfg.outputs.config }}
+          loadTestResource: ${{ vars.AZURE_LOAD_TEST_RESOURCE }}
+          resourceGroup: ${{ vars.AZURE_RESOURCE_GROUP }}

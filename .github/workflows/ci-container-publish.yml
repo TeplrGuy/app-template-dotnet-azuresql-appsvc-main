@@ -1,0 +1,95 @@
+name: CI - Container Build & Publish (US2)
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+          - image: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Azure login (OIDC)
+        id: azure-login
+        if: ${{ vars.AZURE_CLIENT_ID != '' && vars.AZURE_TENANT_ID != '' && vars.AZURE_SUBSCRIPTION_ID != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: ACR login
+        if: ${{ steps.azure-login.outcome == 'success' && vars.ACR_NAME != '' }}
+        run: az acr login --name "${{ vars.ACR_NAME }}"
+
+      - name: Set image refs
+        id: refs
+        env:
+          SHOULD_PUSH: ${{ vars.ACR_LOGIN_SERVER != '' && steps.azure-login.outcome == 'success' }}
+        run: |
+          echo "should_push=${SHOULD_PUSH}" >> $GITHUB_OUTPUT
+          echo "local_ref=${{ matrix.image }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "remote_ref=${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.image }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build image (for scan)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.refs.outputs.local_ref }}
+
+      - name: Image scan (Trivy)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ steps.refs.outputs.local_ref }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+
+      - name: Build & push image (when configured)
+        if: ${{ steps.refs.outputs.should_push == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.refs.outputs.remote_ref }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Publish summary
+        run: |
+          echo "Built (scanned) image: ${{ steps.refs.outputs.local_ref }}"
+          if [ "${{ steps.refs.outputs.should_push }}" = "true" ]; then
+            echo "Pushed image: ${{ steps.refs.outputs.remote_ref }}"
+          else
+            echo "Push skipped (set vars.AZURE_* + vars.ACR_NAME + vars.ACR_LOGIN_SERVER)."
+          fi

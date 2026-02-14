@@ -1,0 +1,57 @@
+name: CI - Quality Gates (US2)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Secret scanning (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+
+      - name: Init CodeQL (JS/TS)
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyze CodeQL
+        uses: github/codeql-action/analyze@v3
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: SCA (npm audit) - backend
+        working-directory: backend
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=critical --omit=dev
+
+      - name: SCA (npm audit) - frontend
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm audit --audit-level=critical --omit=dev
+
+      - name: Trivy filesystem scan (CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: 1
+          format: table

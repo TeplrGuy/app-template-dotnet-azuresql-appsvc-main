@@ -1,0 +1,284 @@
+openapi: 3.0.3
+info:
+  title: Contoso University API (Modernized)
+  version: 0.1.0
+  description: |
+    Target API surface for the Node.js backend while preserving existing Contoso University semantics.
+servers:
+  - url: https://{host}
+    variables:
+      host:
+        default: localhost:3000
+paths:
+  /api/students:
+    get:
+      summary: List students
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: pageSize
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+      responses:
+        '200':
+          description: Paged students
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedStudents'
+    post:
+      summary: Create student
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentCreate'
+      responses:
+        '201':
+          description: Created student
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Student'
+  /api/students/{studentId}:
+    get:
+      summary: Get student by id
+      parameters:
+        - in: path
+          name: studentId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Student
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Student'
+        '404': { description: Not found }
+    put:
+      summary: Update student
+      parameters:
+        - in: path
+          name: studentId
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StudentUpdate'
+      responses:
+        '200':
+          description: Updated student
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Student'
+        '404': { description: Not found }
+    delete:
+      summary: Delete student
+      parameters:
+        - in: path
+          name: studentId
+          required: true
+          schema: { type: integer }
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found }
+  /api/students/search:
+    get:
+      summary: Search students
+      parameters:
+        - in: query
+          name: name
+          required: true
+          schema: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: Matching students
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Students'
+  /api/courses:
+    get:
+      summary: List courses
+      responses:
+        '200':
+          description: Courses
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Courses'
+    post:
+      summary: Create course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourseCreate'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+  /api/courses/{courseId}:
+    get:
+      summary: Get course
+      parameters:
+        - in: path
+          name: courseId
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Course
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+        '404': { description: Not found }
+    put:
+      summary: Update course
+      parameters:
+        - in: path
+          name: courseId
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CourseUpdate'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Course'
+        '404': { description: Not found }
+    delete:
+      summary: Delete course
+      parameters:
+        - in: path
+          name: courseId
+          required: true
+          schema: { type: integer }
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found }
+  /api/instructors:
+    get:
+      summary: List instructors
+      responses:
+        '200':
+          description: Instructors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Instructors'
+  /api/departments:
+    get:
+      summary: List departments
+      responses:
+        '200':
+          description: Departments
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Departments'
+components:
+  schemas:
+    Student:
+      type: object
+      required: [studentId, firstName, lastName, enrollmentDate]
+      properties:
+        studentId: { type: integer }
+        firstName: { type: string }
+        lastName: { type: string }
+        enrollmentDate: { type: string, format: date-time }
+    StudentCreate:
+      type: object
+      required: [firstName, lastName, enrollmentDate]
+      properties:
+        firstName: { type: string, minLength: 1 }
+        lastName: { type: string, minLength: 1 }
+        enrollmentDate: { type: string, format: date-time }
+    StudentUpdate:
+      type: object
+      required: [firstName, lastName, enrollmentDate]
+      properties:
+        firstName: { type: string, minLength: 1 }
+        lastName: { type: string, minLength: 1 }
+        enrollmentDate: { type: string, format: date-time }
+    PagedStudents:
+      type: object
+      required: [students, count, pages, currentPage]
+      properties:
+        students:
+          $ref: '#/components/schemas/Students'
+        count: { type: integer }
+        pages: { type: integer }
+        currentPage: { type: integer }
+    Students:
+      type: array
+      items:
+        $ref: '#/components/schemas/Student'
+    Course:
+      type: object
+      required: [courseId, title, credits]
+      properties:
+        courseId: { type: integer }
+        title: { type: string }
+        credits: { type: integer }
+        departmentId: { type: integer }
+    CourseCreate:
+      type: object
+      required: [title, credits]
+      properties:
+        title: { type: string, minLength: 1 }
+        credits: { type: integer, minimum: 0 }
+        departmentId: { type: integer }
+    CourseUpdate:
+      type: object
+      required: [title, credits]
+      properties:
+        title: { type: string, minLength: 1 }
+        credits: { type: integer, minimum: 0 }
+        departmentId: { type: integer }
+    Courses:
+      type: array
+      items:
+        $ref: '#/components/schemas/Course'
+    Instructor:
+      type: object
+      properties:
+        instructorId: { type: integer }
+        firstName: { type: string }
+        lastName: { type: string }
+        hireDate: { type: string, format: date-time }
+    Instructors:
+      type: array
+      items:
+        $ref: '#/components/schemas/Instructor'
+    Department:
+      type: object
+      properties:
+        departmentId: { type: integer }
+        name: { type: string }
+        budget: { type: number, format: double }
+        startDate: { type: string, format: date-time }
+        instructorId: { type: integer }
+    Departments:
+      type: array
+      items:
+        $ref: '#/components/schemas/Department'

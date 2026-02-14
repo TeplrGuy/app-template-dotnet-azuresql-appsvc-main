@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("SQLSERVER_CONNECTION_STRING")
+}
+
+model Student {
+  id             Int      @id @default(autoincrement()) @map("ID")
+  lastName       String   @map("LastName")
+  firstName      String   @map("FirstName")
+  enrollmentDate DateTime @map("EnrollmentDate")
+
+  studentCourses StudentCourse[]
+
+  @@map("Student")
+}
+
+model Course {
+  id           Int    @id @default(autoincrement()) @map("ID")
+  title        String @map("Title")
+  credits      Int    @map("Credits")
+  departmentId Int?   @map("DepartmentID")
+
+  department Department? @relation(fields: [departmentId], references: [id])
+
+  studentCourses StudentCourse[]
+
+  @@map("Course")
+}
+
+model Department {
+  id           Int      @id @default(autoincrement()) @map("ID")
+  name         String   @map("Name")
+  budget       Decimal  @map("Budget") @db.Decimal(19,4)
+  startDate    DateTime @map("StartDate")
+  instructorId Int?     @map("InstructorID")
+
+  instructor Instructor? @relation(fields: [instructorId], references: [id])
+  courses    Course[]
+
+  @@map("Department")
+}
+
+model Instructor {
+  id        Int      @id @default(autoincrement()) @map("ID")
+  lastName  String   @map("LastName")
+  firstName String   @map("FirstName")
+  hireDate  DateTime @map("HireDate")
+
+  departments Department[]
+
+  @@map("Instructor")
+}
+
+model StudentCourse {
+  studentId Int @map("StudentID")
+  courseId  Int @map("CourseID")
+
+  student Student @relation(fields: [studentId], references: [id])
+  course  Course  @relation(fields: [courseId], references: [id])
+
+  @@id([studentId, courseId])
+  @@map("StudentCourse")
+}

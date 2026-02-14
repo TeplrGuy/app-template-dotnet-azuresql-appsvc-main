@@ -1,0 +1,112 @@
+name: CD - Staging (US2)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to current SHA)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_WORKING_DIR: infra/terraform/envs/staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: staging
+    outputs:
+      web_url: ${{ steps.tfout.outputs.web_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate required repo variables
+        run: |
+          MISSING=""
+          [ -z "${{ vars.AZURE_CLIENT_ID }}" ] && MISSING="$MISSING AZURE_CLIENT_ID"
+          [ -z "${{ vars.AZURE_TENANT_ID }}" ] && MISSING="$MISSING AZURE_TENANT_ID"
+          [ -z "${{ vars.AZURE_SUBSCRIPTION_ID }}" ] && MISSING="$MISSING AZURE_SUBSCRIPTION_ID"
+          [ -z "${{ vars.TF_NAME_PREFIX }}" ] && MISSING="$MISSING TF_NAME_PREFIX"
+          if [ -n "$MISSING" ]; then
+            echo "Missing required vars:$MISSING"
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: terraform init
+
+      - name: Terraform apply
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform apply -auto-approve \
+            -var "name_prefix=${{ vars.TF_NAME_PREFIX }}" \
+            -var "location=${{ vars.AZURE_LOCATION || 'eastus2' }}"
+
+      - name: Read Terraform outputs
+        id: tfout
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          HOST=$(terraform output -raw web_app_default_hostname)
+          echo "web_url=https://$HOST" >> $GITHUB_OUTPUT
+
+      - name: Deploy application (placeholder)
+        run: |
+          echo "TODO: Deploy container images to the provisioned App Service."
+          echo "Recommended: use Linux Web App for Containers + managed identity ACR pull."
+
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps
+        working-directory: frontend
+      - name: Playwright smoke against staging
+        working-directory: frontend
+        env:
+          PLAYWRIGHT_BASE_URL: ${{ needs.deploy.outputs.web_url }}
+        run: npm run e2e -- tests/e2e/smoke.spec.ts
+
+  dast:
+    runs-on: ubuntu-latest
+    needs: [deploy, smoke-tests]
+    if: ${{ vars.DAST_ENABLED == 'true' }}
+    steps:
+      - name: OWASP ZAP baseline (DAST)
+        run: |
+          mkdir -p zap
+          docker run --rm -v "${PWD}/zap:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
+            -t "${{ needs.deploy.outputs.web_url }}" -r zap-report.html || true
+          echo "DAST completed (see zap-report.html)."
