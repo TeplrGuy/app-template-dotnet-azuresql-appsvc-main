@@ -13,15 +13,14 @@ variable "service_plan_name" {
   type        = string
 }
 
-variable "web_app_name" {
-  description = "Web App name (globally unique)."
+variable "backend_app_name" {
+  description = "Backend API Web App name (globally unique)."
   type        = string
 }
 
-variable "os_type" {
-  description = "Plan OS type (Windows or Linux)."
+variable "frontend_app_name" {
+  description = "Frontend Web App name (globally unique)."
   type        = string
-  default     = "Windows"
 }
 
 variable "sku_name" {
@@ -36,8 +35,45 @@ variable "always_on" {
   default     = true
 }
 
+variable "acr_login_server" {
+  description = "ACR login server URL (e.g., myacr.azurecr.io)."
+  type        = string
+}
+
+variable "backend_image" {
+  description = "Backend container image name (without registry)."
+  type        = string
+  default     = "backend:latest"
+}
+
+variable "frontend_image" {
+  description = "Frontend container image name (without registry)."
+  type        = string
+  default     = "frontend:latest"
+}
+
+variable "sql_connection_string" {
+  description = "SQL Server connection string for backend."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "app_insights_connection_string" {
+  description = "Application Insights connection string."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "tags" {
   description = "Resource tags."
   type        = map(string)
   default     = {}
+}
+
+variable "acr_id" {
+  description = "ACR resource ID for AcrPull role assignment."
+  type        = string
+  default     = ""
 }

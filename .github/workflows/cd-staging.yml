@@ -20,7 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     environment: staging
     outputs:
-      web_url: ${{ steps.tfout.outputs.web_url }}
+      backend_url: ${{ steps.tfout.outputs.backend_url }}
+      frontend_url: ${{ steps.tfout.outputs.frontend_url }}
+      backend_app: ${{ steps.tfout.outputs.backend_app }}
+      frontend_app: ${{ steps.tfout.outputs.frontend_app }}
+      resource_group: ${{ steps.tfout.outputs.resource_group }}
+      acr_server: ${{ steps.tfout.outputs.acr_server }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +50,8 @@ jobs:
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
 
       - name: Terraform init
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -53,7 +60,12 @@ jobs:
           ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-        run: terraform init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TF_STATE_RESOURCE_GROUP || format('{0}-tfstate-rg', vars.TF_NAME_PREFIX) }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT || format('{0}tfstate', vars.TF_NAME_PREFIX) }}" \
+            -backend-config="container_name=${{ vars.TF_STATE_CONTAINER || 'tfstate' }}" \
+            -backend-config="key=staging.terraform.tfstate"
 
       - name: Terraform apply
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -65,19 +77,58 @@ jobs:
         run: |
           terraform apply -auto-approve \
             -var "name_prefix=${{ vars.TF_NAME_PREFIX }}" \
-            -var "location=${{ vars.AZURE_LOCATION || 'eastus2' }}"
+            -var "location=${{ vars.AZURE_LOCATION || 'eastus2' }}" \
+            -var "aad_admin_login=${{ vars.AAD_ADMIN_LOGIN || 'sqladmin' }}" \
+            -var "aad_admin_object_id=${{ vars.AAD_ADMIN_OBJECT_ID || '' }}" \
+            -var "tenant_id=${{ vars.AZURE_TENANT_ID }}"
 
       - name: Read Terraform outputs
         id: tfout
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: |
-          HOST=$(terraform output -raw web_app_default_hostname)
-          echo "web_url=https://$HOST" >> $GITHUB_OUTPUT
+          echo "backend_app=$(terraform output -raw backend_app_name)" >> $GITHUB_OUTPUT
+          echo "frontend_app=$(terraform output -raw frontend_app_name)" >> $GITHUB_OUTPUT
+          echo "backend_url=https://$(terraform output -raw backend_default_hostname)" >> $GITHUB_OUTPUT
+          echo "frontend_url=https://$(terraform output -raw frontend_default_hostname)" >> $GITHUB_OUTPUT
+          echo "resource_group=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
+          echo "acr_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
 
-      - name: Deploy application (placeholder)
+      - name: Deploy backend container
         run: |
-          echo "TODO: Deploy container images to the provisioned App Service."
-          echo "Recommended: use Linux Web App for Containers + managed identity ACR pull."
+          TAG="${{ inputs.image_tag || github.sha }}"
+          ACR="${{ steps.tfout.outputs.acr_server }}"
+          echo "Deploying backend:${TAG} to ${{ steps.tfout.outputs.backend_app }}"
+          az webapp config container set \
+            --name "${{ steps.tfout.outputs.backend_app }}" \
+            --resource-group "${{ steps.tfout.outputs.resource_group }}" \
+            --container-image-name "${ACR}/backend:${TAG}" \
+            --container-registry-url "https://${ACR}"
+          az webapp restart \
+            --name "${{ steps.tfout.outputs.backend_app }}" \
+            --resource-group "${{ steps.tfout.outputs.resource_group }}"
+
+      - name: Deploy frontend container
+        run: |
+          TAG="${{ inputs.image_tag || github.sha }}"
+          ACR="${{ steps.tfout.outputs.acr_server }}"
+          echo "Deploying frontend:${TAG} to ${{ steps.tfout.outputs.frontend_app }}"
+          az webapp config container set \
+            --name "${{ steps.tfout.outputs.frontend_app }}" \
+            --resource-group "${{ steps.tfout.outputs.resource_group }}" \
+            --container-image-name "${ACR}/frontend:${TAG}" \
+            --container-registry-url "https://${ACR}"
+          az webapp restart \
+            --name "${{ steps.tfout.outputs.frontend_app }}" \
+            --resource-group "${{ steps.tfout.outputs.resource_group }}"
+
+      - name: Wait for apps to start
+        run: |
+          echo "Waiting 30s for containers to start..."
+          sleep 30
+          echo "Checking backend health..."
+          curl -sf "${{ steps.tfout.outputs.backend_url }}/api" --retry 5 --retry-delay 10 || echo "Backend not ready yet"
+          echo "Checking frontend health..."
+          curl -sf "${{ steps.tfout.outputs.frontend_url }}/health" --retry 5 --retry-delay 10 || echo "Frontend not ready yet"
 
   smoke-tests:
     runs-on: ubuntu-latest
@@ -96,7 +147,7 @@ jobs:
       - name: Playwright smoke against staging
         working-directory: frontend
         env:
-          PLAYWRIGHT_BASE_URL: ${{ needs.deploy.outputs.web_url }}
+          PLAYWRIGHT_BASE_URL: ${{ needs.deploy.outputs.frontend_url }}
         run: npm run e2e -- tests/e2e/smoke.spec.ts
 
   dast:
@@ -107,6 +158,6 @@ jobs:
       - name: OWASP ZAP baseline (DAST)
         run: |
           mkdir -p zap
-          docker run --rm -v "${PWD}/zap:/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
-            -t "${{ needs.deploy.outputs.web_url }}" -r zap-report.html || true
+          docker run --rm -v "${PWD}/zap:/zap/wrk" ghcr.io/zaproxy/zaproxy:stable zap-baseline.py \
+            -t "${{ needs.deploy.outputs.frontend_url }}" -r zap-report.html || true
           echo "DAST completed (see zap-report.html)."

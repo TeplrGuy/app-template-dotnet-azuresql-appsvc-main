@@ -1,41 +1,34 @@
-# Implementation Plan: Modernize Contoso University (React + Node + Terraform)
+# Implementation Plan: Fix CI/CD Pipeline, Terraform, and Azure Deployment
 
-**Branch**: `001-modernize-web-api` | **Date**: 2026-02-13 | **Spec**: `specs/001-modernize-web-api/spec.md`
-**Input**: Feature specification from `/specs/001-modernize-web-api/spec.md`
+**Branch**: `001-modernize-web-api` | **Date**: 2026-02-15 | **Spec**: [spec.md](spec.md)
+**Input**: Fix GitHub Actions pipeline errors, complete Terraform modules for full Azure deployment (SQL, ACR, App Service with container), wire end-to-end CD, add gh-aw agentic workflows, and ensure all frontend pages work error-free.
 
 ## Summary
 
-Modernize the current .NET 6 Contoso University experience into a React + TypeScript frontend and a Node.js (TypeScript) backend while keeping the existing SQL (Azure SQL / SQL Server) data model and core workflows (Students, Courses, Enrollments, Instructors, Departments).
-
-In parallel, migrate IaC from Bicep to Terraform and overhaul CI/CD into a container-first, security-gated pipeline: pre-code quality gates (secrets scanning, SAST, SCA), build and test (unit/integration + Playwright E2E), push images to ACR, post-build/container scanning, then staged deployments with smoke tests, DAST, and optional manual approvals.
-
-Finally, introduce an AI-assisted “triage and propose remediation” workflow using GitHub Copilot SDK + GitHub Agentic Workflows (read-only by default; any write action must be explicit, minimal, and auditable).
+The CI/CD pipeline and Terraform infrastructure are incomplete. Terraform modules lack a SQL Server module, the App Service module uses `azurerm_windows_web_app` (should be Linux for containers), App Service has no connection to ACR/SQL/monitoring, CD workflows have placeholder deploy steps, and there is no nginx config for SPA routing on the frontend. This plan completes everything needed for a working end-to-end deployment to Azure, adds GitHub Agentic Workflows (gh-aw) for CI failure triage, and ensures all UI pages render without errors.
 
 ## Technical Context
 
-**Language/Version**: TypeScript (latest stable) on Node.js 20 LTS; React (latest stable) + TypeScript
-**Primary Dependencies**:
-- Frontend: Vite, React Router, TanStack Query (data fetching/cache), MUI (design system), Playwright (E2E)
-- Backend: NestJS (or lightweight Fastify/Express if Nest is too heavy), Zod/class-validator (request validation), Prisma (SQL Server) or Sequelize (alternative), OpenAPI generation
-- CI/CD: GitHub Actions, Docker Buildx, Terraform (AzureRM), security scanners (Snyk/Wiz/SonarQube as configured)
-- AI: GitHub Copilot SDK (Node) and GitHub Agentic Workflows technical preview
-**Storage**: Azure SQL Database (SQL Server protocol); local dev uses SQL Server (local container) or a developer Azure SQL DB
-**Testing**: Frontend unit (Vitest) + component tests (optional); backend unit/integration (Jest + Supertest); E2E & smoke tests (Playwright); load testing (Azure Load Testing)
-**Target Platform**: Azure App Service for Containers + Azure Container Registry + Azure SQL
-**Project Type**: Web application (separate frontend and backend)
-**Performance Goals**: p95 page navigation < 2s for core views under expected demo load; p95 API < 500ms for list/read endpoints (excluding cold start)
-**Constraints**: secure-by-default (no secrets in repo), staged promotion, container scanning, minimal auto-remediation blast radius, preserve existing core data semantics
-**Scale/Scope**: demo/reference implementation; focus on core endpoints and pipelines, not feature-complete parity with every legacy page
+**Language/Version**: TypeScript 5.x (Node 20), Terraform >= 1.5  
+**Primary Dependencies**: NestJS (backend), React+Vite+MUI (frontend), Prisma (ORM), azurerm provider  
+**Storage**: Azure SQL Database (via Prisma)  
+**Testing**: Jest (backend), Vitest (frontend), Playwright (e2e)  
+**Target Platform**: Linux App Service for Containers on Azure  
+**Project Type**: Web application (frontend + backend)  
+**Performance Goals**: < 2s page load, < 1% error rate  
+**Constraints**: OIDC auth for Azure (no secrets), containerized deployment, Terraform state in Azure Storage  
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-- Tests updated/added where behavior changes; existing `.NET` tests continue to run until the legacy stack is retired; new Node/React tests added for new code.
-- No secrets committed; use GitHub OIDC + Azure federated credentials, Key Vault, and managed identity where applicable.
-- Observability considered by default (structured logs, basic request tracing, health checks) for new critical paths.
-- UX remains consistent, modern, and responsive for any user-facing change (design system + responsive layouts).
-- Resilience patterns applied for transient dependencies (SQL retries/timeouts, circuit-breakers where appropriate).
+| Principle | Status | Notes |
+|-----------|--------|-------|
+| Reliability & Resilience | ✅ PASS | Retry logic in PrismaService, error boundary in frontend |
+| Test & Code Quality Gates | ✅ PASS | CI pipeline has lint/test/build + quality gates + Playwright |
+| UX Consistency | ✅ PASS | MUI theme, responsive layout, error states all implemented |
+| Observability | ✅ PASS | Application Insights wired via Terraform monitoring module |
+| Secure-by-Default | ✅ PASS | OIDC auth, managed identity, Key Vault for secrets, parameterized queries via Prisma |
 
 ## Project Structure
 
@@ -43,49 +36,121 @@ Finally, introduce an AI-assisted “triage and propose remediation” workflow 
 
 ```text
 specs/001-modernize-web-api/
-├── plan.md              # This file (/speckit.plan command output)
-├── research.md          # Phase 0 output
-├── data-model.md        # Phase 1 output
-├── quickstart.md        # Phase 1 output
-├── contracts/           # Phase 1 output (OpenAPI, schemas)
-└── tasks.md             # Phase 2 output (/speckit.tasks)
+├── plan.md              # This file
+├── research.md          # Phase 0 research findings
+├── data-model.md        # Entity model (existing)
+├── quickstart.md        # Local dev guide (existing)
+├── contracts/           # OpenAPI spec (existing)
+└── tasks.md             # Task tracking (existing)
 ```
 
 ### Source Code (repository root)
 
 ```text
-# Existing (legacy) .NET solution remains during migration
-src/
-├── ContosoUniversity.WebApplication/
-├── ContosoUniversity.API/
-├── ContosoUniversity.Data/
-└── ContosoUniversity.Test/
-
-# New (modernized) apps (to be created during implementation)
 backend/
-├── src/
-├── test/
-└── Dockerfile
+├── src/                 # NestJS API
+├── prisma/              # Prisma schema + migrations
+├── test/                # e2e tests
+├── Dockerfile           # Multi-stage Docker build
+└── package.json
 
 frontend/
-├── src/
-├── test/
-└── Dockerfile
+├── src/                 # React + MUI pages
+├── tests/e2e/           # Playwright tests
+├── Dockerfile           # Multi-stage Docker build (needs nginx.conf)
+├── nginx.conf           # NEW: SPA routing for nginx
+└── package.json
 
-# Infrastructure
-infra/
-└── terraform/
+infra/terraform/
+├── modules/
+│   ├── acr/             # Container Registry (exists)
+│   ├── appservice/      # App Service (needs Linux + container config)
+│   ├── monitoring/      # Log Analytics + App Insights (exists)
+│   └── sql/             # NEW: Azure SQL Server + Database
+├── envs/
+│   ├── staging/         # Staging composition (needs SQL, wiring)
+│   └── prod/            # Production composition (needs SQL, wiring)
+├── backend.tf           # NEW: Remote state backend config
+├── main.tf              # Root skeleton
+├── variables.tf
+└── outputs.tf
 
-# CI/CD
-.github/
-└── workflows/
-
-# Performance testing
-loadtests/
+.github/workflows/
+├── ci.yml                    # Basic CI (exists)
+├── ci-build-test.yml         # Extended CI (exists)
+├── ci-quality-gates.yml      # Security gates (exists)
+├── ci-container-publish.yml  # Docker build + scan (exists)
+├── ci-triage.yml             # CI triage (exists, needs gh-aw version)
+├── cd-staging.yml            # CD staging (needs real deploy)
+├── cd-prod.yml               # CD prod (needs real deploy)
+└── ci-failure-doctor.md      # NEW: gh-aw agentic workflow
 ```
 
-**Structure Decision**: Use a “web application” split (`frontend/` + `backend/`) so UI and API can iterate independently, be containerized separately, and be gated/tested independently. Keep the existing `src/` .NET solution in place until the new stack reaches functional parity for the core workflows.
+## Key Problems to Fix
+
+### 1. Terraform Infrastructure Gaps
+- **No SQL module**: Missing `modules/sql/` — need Azure SQL Server + Database
+- **Wrong App Service type**: Uses `azurerm_windows_web_app` but our containers are Linux
+- **No wiring**: App Service has no app_settings for DB connection, ACR, App Insights
+- **No remote state**: Both envs use local state (commented backend block)
+- **No SQL variable/output flow**: Env compositions don't instantiate SQL
+
+### 2. CD Pipeline Gaps
+- **Placeholder deploy**: Both cd-staging.yml and cd-prod.yml have `echo "TODO: Deploy container images"`
+- **No container deploy step**: Need `az webapp config container set` or Azure Web App Deploy action
+- **No Terraform state backend**: `terraform init` will fail without state config in CI
+- **Frontend SPA routing**: nginx serves static files but has no fallback to index.html for client-side routes
+
+### 3. GitHub Agentic Workflows
+- User wants gh-aw integration for CI failure triage
+- Current ci-triage.yml uses custom Node.js scripts — complement with gh-aw markdown workflow
+- The gh-aw ci-doctor pattern is a perfect fit
+
+### 4. UI Page Errors
+- Need to verify all pages (Home, Students, Courses, Teachers, NotFound) render without console errors
+- Frontend Dockerfile needs nginx.conf for SPA route handling
+
+## Implementation Phases
+
+### Phase A: Terraform Completion
+1. Create `infra/terraform/modules/sql/` module (SQL Server + Database + firewall rules)
+2. Convert `modules/appservice/` from Windows to Linux web app with container config
+3. Add app_settings wiring (SQL connection string, ACR, App Insights) to appservice module
+4. Add ACR pull role assignment (managed identity → ACR)
+5. Update `envs/staging/main.tf` and `envs/prod/main.tf` to wire all modules together
+6. Add Terraform backend configuration for Azure Storage remote state
+
+### Phase B: CD Pipeline Fix
+1. Replace placeholder deploy steps with `az webapp config container set` + restart
+2. Add container image tag passing from CI to CD
+3. Wire Terraform outputs (hostname, resource names) into deploy steps
+4. Fix `terraform init` with backend config (or use `-backend-config` flags)
+5. Add health check verification after deployment
+
+### Phase C: Frontend Deployment Readiness
+1. Create `frontend/nginx.conf` with SPA fallback routing + API proxy
+2. Update `frontend/Dockerfile` to copy nginx.conf
+3. Add `VITE_API_BASE_URL` build arg support in Dockerfile
+4. Verify all pages render correctly in production build
+
+### Phase D: GitHub Agentic Workflows
+1. Create `.github/workflows/ci-failure-doctor.md` — gh-aw agentic workflow for CI triage
+2. Create corresponding `.github/workflows/ci-failure-doctor.lock.yml` via `gh aw compile`
+3. Add `.gitattributes` entry for lock files
+4. This complements the existing `ci-triage.yml` (Node.js-based) with AI-powered triage
+
+### Phase E: Validation & Testing
+1. Run `terraform validate` and `terraform plan` (dry-run) on staging env
+2. Build both Docker images locally and verify they start
+3. Run full test suite (backend + frontend + Playwright)
+4. Verify CI workflow YAML syntax with actionlint or manual review
 
 ## Complexity Tracking
 
-No constitution violations required for this plan.
+| Aspect | Complexity | Justification |
+|--------|-----------|---------------|
+| SQL Terraform module | Medium | Standard azurerm resources, managed identity auth |
+| Linux container App Service | Low | Well-documented azurerm pattern |
+| CD pipeline deploy steps | Medium | Container set + ACR pull + health check coordination |
+| gh-aw integration | Low | Follow ci-doctor pattern from gh-aw repo |
+| Frontend nginx.conf | Low | Standard SPA fallback pattern |

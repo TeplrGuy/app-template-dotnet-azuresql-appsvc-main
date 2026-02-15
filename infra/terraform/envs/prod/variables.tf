@@ -32,3 +32,15 @@ variable "client_id" {
   type        = string
   default     = null
 }
+
+variable "aad_admin_login" {
+  description = "AAD admin display name for SQL Server."
+  type        = string
+  default     = "sqladmin"
+}
+
+variable "aad_admin_object_id" {
+  description = "AAD admin object ID (user or group) for SQL Server."
+  type        = string
+  default     = ""
+}

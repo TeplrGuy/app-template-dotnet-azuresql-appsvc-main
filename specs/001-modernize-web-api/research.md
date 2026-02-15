@@ -94,3 +94,43 @@ This research document captures the concrete technology decisions and rationale 
 ## Open Questions
 
 None required to proceed with Phase 1 design. Decisions above are sufficient to generate tasks.
+
+---
+
+## Phase 8 Research: Pipeline Fix, Terraform Completion, and Azure Deployment
+
+*Added 2026-02-15 for CI/CD pipeline fixes, Terraform completion, and end-to-end deployment.*
+
+### R8-1: Azure SQL Terraform Module
+
+**Decision**: Use `azurerm_mssql_server` + `azurerm_mssql_database` with AAD-only auth.
+**Rationale**: Matches Prisma `sqlserver` provider; managed identity avoids passwords; MCAPS-compliant.
+**Implementation**: Firewall rule for Azure services (0.0.0.0), AAD admin via `azurerm_mssql_server` `azuread_administrator` block.
+
+### R8-2: Linux App Service for Containers
+
+**Decision**: Replace `azurerm_windows_web_app` with `azurerm_linux_web_app` using Docker containers.
+**Rationale**: Both Dockerfiles produce Linux images (node:20-alpine, nginx:1.27-alpine).
+**Implementation**: Two web apps on shared plan; `application_stack` block for container config; managed identity for ACR pull.
+
+### R8-3: Terraform Remote State
+
+**Decision**: Use `azurerm` backend with Azure Storage.
+**Rationale**: Standard for CI/CD; state locking via blob lease; encrypted at rest.
+**Implementation**: `-backend-config` flags in CI; key = `{env}.terraform.tfstate`.
+
+### R8-4: CD Container Deployment
+
+**Decision**: Use `az webapp config container set` + `az webapp restart`.
+**Rationale**: Simple CLI approach works with OIDC; no extra actions needed.
+
+### R8-5: Frontend SPA Routing
+
+**Decision**: Custom `nginx.conf` with `try_files $uri $uri/ /index.html`.
+**Rationale**: React Router client-side routing needs server-side fallback.
+
+### R8-6: GitHub Agentic Workflows
+
+**Decision**: Create `ci-failure-doctor.md` agentic workflow following gh-aw ci-doctor pattern.
+**Rationale**: User requested gh-aw integration; complements existing Node.js triage tool with AI-powered analysis.
+**Implementation**: Markdown workflow + compiled lock.yml; triggers on CI failure; uses Copilot engine for analysis.
