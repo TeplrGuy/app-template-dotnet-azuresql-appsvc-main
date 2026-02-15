@@ -1,0 +1,63 @@
+name: CI Triage (US3)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: 'Workflow run ID to triage'
+        required: true
+        type: string
+      enable-remediation:
+        description: 'Enable low-risk remediation proposals'
+        required: false
+        default: false
+        type: boolean
+  workflow_run:
+    workflows: ["CI - Build & Test (US2)", "CI - Quality Gates (US2)"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  triage:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install triage tool
+        working-directory: scripts/ci-triage
+        run: npm ci --ignore-scripts || npm install --ignore-scripts
+
+      - name: Build triage tool
+        working-directory: scripts/ci-triage
+        run: npx tsc
+
+      - name: Run CI triage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.event.workflow_run.id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ENABLE_REMEDIATION: ${{ inputs.enable-remediation || 'false' }}
+        working-directory: scripts/ci-triage
+        run: node dist/index.js | tee triage-output.md
+
+      - name: Upload triage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-triage-report
+          path: scripts/ci-triage/triage-output.md
+
+  # Manual dispatch with remediation opt-in
+  triage-manual:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Manual triage not triggered in this run"

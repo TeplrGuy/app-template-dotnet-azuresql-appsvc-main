@@ -9,6 +9,8 @@ export type StudentDto = {
   firstName: string;
   lastName: string;
   enrollmentDate: string;
+  email: string;
+  courseCount: number;
 };
 
 export type PagedStudentsDto = {
@@ -29,6 +31,7 @@ export class StudentsService {
     const [totalCount, items] = await this.prisma.$transaction([
       this.prisma.student.count(),
       this.prisma.student.findMany({
+        include: { _count: { select: { studentCourses: true } } },
         orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
         skip,
         take,
@@ -44,6 +47,8 @@ export class StudentsService {
         firstName: s.firstName,
         lastName: s.lastName,
         enrollmentDate: s.enrollmentDate.toISOString(),
+        email: `${s.firstName.toLowerCase()}.${s.lastName.toLowerCase()}@contoso.edu`,
+        courseCount: s._count.studentCourses,
       })),
     };
   }
@@ -51,6 +56,7 @@ export class StudentsService {
   async get(studentId: number): Promise<StudentDto> {
     const s = await this.prisma.student.findUnique({
       where: { id: studentId },
+      include: { _count: { select: { studentCourses: true } } },
     });
     if (!s) throw new NotFoundException('Student not found');
     return {
@@ -58,6 +64,8 @@ export class StudentsService {
       firstName: s.firstName,
       lastName: s.lastName,
       enrollmentDate: s.enrollmentDate.toISOString(),
+      email: `${s.firstName.toLowerCase()}.${s.lastName.toLowerCase()}@contoso.edu`,
+      courseCount: s._count.studentCourses,
     };
   }
 
@@ -75,6 +83,8 @@ export class StudentsService {
       firstName: s.firstName,
       lastName: s.lastName,
       enrollmentDate: s.enrollmentDate.toISOString(),
+      email: `${s.firstName.toLowerCase()}.${s.lastName.toLowerCase()}@contoso.edu`,
+      courseCount: 0,
     };
   }
 
@@ -86,6 +96,7 @@ export class StudentsService {
 
     const s = await this.prisma.student.update({
       where: { id: studentId },
+      include: { _count: { select: { studentCourses: true } } },
       data: {
         firstName: dto.firstName,
         lastName: dto.lastName,
@@ -100,6 +111,8 @@ export class StudentsService {
       firstName: s.firstName,
       lastName: s.lastName,
       enrollmentDate: s.enrollmentDate.toISOString(),
+      email: `${s.firstName.toLowerCase()}.${s.lastName.toLowerCase()}@contoso.edu`,
+      courseCount: s._count.studentCourses,
     };
   }
 
@@ -119,6 +132,7 @@ export class StudentsService {
       where: {
         OR: [{ firstName: { contains: q } }, { lastName: { contains: q } }],
       },
+      include: { _count: { select: { studentCourses: true } } },
       orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
       take: 50,
     });
@@ -128,6 +142,8 @@ export class StudentsService {
       firstName: s.firstName,
       lastName: s.lastName,
       enrollmentDate: s.enrollmentDate.toISOString(),
+      email: `${s.firstName.toLowerCase()}.${s.lastName.toLowerCase()}@contoso.edu`,
+      courseCount: s._count.studentCourses,
     }));
   }
 }

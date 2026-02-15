@@ -16,6 +16,8 @@ test('renders app header', () => {
   render(<RouterProvider router={router} />);
 
   expect(screen.getByText('Contoso University')).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Go to home' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Students' })).toBeInTheDocument();
+  expect(screen.getByText('Student Information System')).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Students' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Courses' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: 'Teachers' })).toBeInTheDocument();
 });

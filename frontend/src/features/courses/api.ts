@@ -7,6 +7,10 @@ export type Course = {
   title: string;
   credits: number;
   departmentId?: number | null;
+  courseCode: string;
+  description: string;
+  departmentName: string;
+  studentCount: number;
 };
 
 export const coursesQueryKeys = {

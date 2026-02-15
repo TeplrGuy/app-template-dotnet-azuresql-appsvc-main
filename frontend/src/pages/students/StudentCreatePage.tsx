@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { StudentForm } from '../../components/students/StudentForm';
 import type { StudentCreate } from '../../features/students/api';
 import { useCreateStudent } from '../../features/students/api';
+import { ApiError } from '../../lib/api/client';
 
 export function StudentCreatePage() {
   const navigate = useNavigate();
@@ -41,9 +42,15 @@ export function StudentCreatePage() {
               await createStudent.mutateAsync(body);
               navigate('/students', { state: { created: true } });
             } catch (e: unknown) {
-              setSubmitError(
-                e instanceof Error ? e.message : 'Failed to create student.',
-              );
+              if (e instanceof ApiError && e.retryable) {
+                setSubmitError(
+                  `${e.message} — this error may be temporary.`,
+                );
+              } else {
+                setSubmitError(
+                  e instanceof Error ? e.message : 'Failed to create student.',
+                );
+              }
             }
           }}
         />

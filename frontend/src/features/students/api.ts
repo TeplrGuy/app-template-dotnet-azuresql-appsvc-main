@@ -12,6 +12,8 @@ export type Student = {
   firstName: string;
   lastName: string;
   enrollmentDate: string;
+  email?: string;
+  courseCount?: number;
 };
 
 export type PagedStudents = {

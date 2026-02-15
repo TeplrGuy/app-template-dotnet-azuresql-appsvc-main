@@ -6,6 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import type { ErrorResponse } from '../errors/error-response';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -14,21 +15,105 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    const status =
-      exception instanceof HttpException
-        ? exception.getStatus()
-        : HttpStatus.INTERNAL_SERVER_ERROR;
+    let status = HttpStatus.INTERNAL_SERVER_ERROR;
+    let message = 'Internal server error';
+    let error: string | undefined;
+    let details: unknown;
+    let retryable = false;
 
-    const message =
-      exception instanceof HttpException
-        ? exception.message
-        : 'Internal server error';
+    if (exception instanceof HttpException) {
+      status = exception.getStatus();
+      const exResponse = exception.getResponse();
+      message =
+        typeof exResponse === 'string'
+          ? exResponse
+          : ((exResponse as any).message ?? exception.message);
+      error =
+        typeof exResponse === 'object'
+          ? (exResponse as any).error
+          : undefined;
+      details =
+        typeof exResponse === 'object'
+          ? (exResponse as any).details
+          : undefined;
+    } else if (this.isPrismaError(exception)) {
+      const mapped = this.mapPrismaError(exception);
+      status = mapped.status;
+      message = mapped.message;
+      error = mapped.error;
+      retryable = mapped.retryable;
+    }
 
-    response.status(status).json({
+    // Transient failures are retryable
+    if (
+      status === HttpStatus.SERVICE_UNAVAILABLE ||
+      status === HttpStatus.GATEWAY_TIMEOUT
+    ) {
+      retryable = true;
+    }
+
+    const body: ErrorResponse = {
       statusCode: status,
       timestamp: new Date().toISOString(),
       path: request.url,
       message,
-    });
+      ...(error ? { error } : {}),
+      ...(details ? { details } : {}),
+      ...(retryable ? { retryable } : {}),
+    };
+
+    response.status(status).json(body);
+  }
+
+  private isPrismaError(
+    exception: unknown,
+  ): exception is { code: string; meta?: Record<string, unknown> } {
+    return (
+      typeof exception === 'object' && exception !== null && 'code' in exception
+    );
+  }
+
+  private mapPrismaError(exception: {
+    code: string;
+    meta?: Record<string, unknown>;
+  }) {
+    switch (exception.code) {
+      case 'P2025':
+        return {
+          status: HttpStatus.NOT_FOUND,
+          message: 'Record not found',
+          error: 'Not Found',
+          retryable: false,
+        };
+      case 'P2002':
+        return {
+          status: HttpStatus.CONFLICT,
+          message: 'Unique constraint violation',
+          error: 'Conflict',
+          retryable: false,
+        };
+      case 'P2003':
+        return {
+          status: HttpStatus.BAD_REQUEST,
+          message: 'Foreign key constraint failed',
+          error: 'Bad Request',
+          retryable: false,
+        };
+      case 'P1001':
+      case 'P1002':
+        return {
+          status: HttpStatus.SERVICE_UNAVAILABLE,
+          message: 'Database connection error',
+          error: 'Service Unavailable',
+          retryable: true,
+        };
+      default:
+        return {
+          status: HttpStatus.INTERNAL_SERVER_ERROR,
+          message: 'Database error',
+          error: 'Internal Server Error',
+          retryable: false,
+        };
+    }
   }
 }

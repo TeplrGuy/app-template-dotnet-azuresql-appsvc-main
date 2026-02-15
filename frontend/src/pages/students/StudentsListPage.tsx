@@ -1,12 +1,10 @@
 import {
   Alert,
+  Avatar,
   Box,
   Button,
+  Chip,
   CircularProgress,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
   Paper,
   Snackbar,
   Stack,
@@ -18,9 +16,7 @@ import {
   TablePagination,
   TableRow,
   Typography,
-  useMediaQuery,
 } from '@mui/material';
-import { useTheme } from '@mui/material/styles';
 import type { ChangeEvent } from 'react';
 import { useEffect, useState } from 'react';
 import {
@@ -41,10 +37,11 @@ function formatDate(iso: string) {
   return d.toLocaleDateString();
 }
 
-export function StudentsListPage() {
-  const theme = useTheme();
-  const mdUp = useMediaQuery(theme.breakpoints.up('md'));
+function initials(first: string, last: string) {
+  return `${first.charAt(0)}${last.charAt(0)}`.toUpperCase();
+}
 
+export function StudentsListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
   const pageSize = Math.max(
@@ -66,7 +63,7 @@ export function StudentsListPage() {
     });
   }, [created, location.pathname, location.search, navigate]);
 
-  const { data, isLoading, isError, error, refetch, isFetching } =
+  const { data, isLoading, isError, error, refetch } =
     useStudentsList(page, pageSize);
 
   const items = data?.items ?? [];
@@ -84,7 +81,7 @@ export function StudentsListPage() {
   };
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={3}>
       <Stack
         direction={{ xs: 'column', sm: 'row' }}
         spacing={2}
@@ -96,7 +93,7 @@ export function StudentsListPage() {
             Students
           </Typography>
           <Typography color="text.secondary">
-            Browse and create students.
+            View all enrolled students and their information.
           </Typography>
         </Box>
 
@@ -130,21 +127,54 @@ export function StudentsListPage() {
         </Alert>
       ) : items.length === 0 ? (
         <Alert severity="info">No students found.</Alert>
-      ) : mdUp ? (
+      ) : (
         <TableContainer component={Paper} aria-label="Students table">
-          <Table size="small">
+          <Table>
             <TableHead>
               <TableRow>
                 <TableCell>Name</TableCell>
-                <TableCell>Enrollment date</TableCell>
+                <TableCell>Email</TableCell>
+                <TableCell>Enrollment Date</TableCell>
+                <TableCell align="center">Courses</TableCell>
                 <TableCell align="right">Actions</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
               {items.map((s: Student) => (
                 <TableRow key={s.studentId} hover>
-                  <TableCell>{`${s.lastName}, ${s.firstName}`}</TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={1.5} alignItems="center">
+                      <Avatar
+                        sx={{
+                          bgcolor: '#E3F2FD',
+                          color: '#1565C0',
+                          width: 36,
+                          height: 36,
+                          fontSize: 14,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {initials(s.firstName, s.lastName)}
+                      </Avatar>
+                      <Typography variant="body2" fontWeight={500}>
+                        {s.firstName} {s.lastName}
+                      </Typography>
+                    </Stack>
+                  </TableCell>
+                  <TableCell>
+                    <Typography variant="body2" color="text.secondary">
+                      {s.email ?? `${s.firstName.toLowerCase()}.${s.lastName.toLowerCase()}@contoso.edu`}
+                    </Typography>
+                  </TableCell>
                   <TableCell>{formatDate(s.enrollmentDate)}</TableCell>
+                  <TableCell align="center">
+                    <Chip
+                      label={s.courseCount ?? 0}
+                      size="small"
+                      color="primary"
+                      variant="outlined"
+                    />
+                  </TableCell>
                   <TableCell align="right">
                     <Button
                       component={RouterLink}
@@ -152,7 +182,7 @@ export function StudentsListPage() {
                       size="small"
                       aria-label={`View student ${s.firstName} ${s.lastName}`}
                     >
-                      View
+                      View Details
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -167,36 +197,11 @@ export function StudentsListPage() {
             onPageChange={onPageChange}
             rowsPerPage={pageSize}
             onRowsPerPageChange={onRowsPerPageChange}
-            rowsPerPageOptions={[10, 20, 50, 100, 200]}
+            rowsPerPageOptions={[10, 20, 50, 100]}
             labelRowsPerPage="Rows"
           />
         </TableContainer>
-      ) : (
-        <Paper aria-label="Students list">
-          <List dense>
-            {items.map((s: Student) => (
-              <ListItem key={s.studentId} disablePadding>
-                <ListItemButton
-                  component={RouterLink}
-                  to={`/students/${s.studentId}`}
-                  aria-label={`Open student ${s.firstName} ${s.lastName}`}
-                >
-                  <ListItemText
-                    primary={`${s.firstName} ${s.lastName}`}
-                    secondary={formatDate(s.enrollmentDate)}
-                  />
-                </ListItemButton>
-              </ListItem>
-            ))}
-          </List>
-        </Paper>
       )}
-
-      {isFetching && !isLoading ? (
-        <Typography color="text.secondary" aria-label="Refreshing students">
-          Refreshing…
-        </Typography>
-      ) : null}
 
       <Snackbar
         open={showCreated}

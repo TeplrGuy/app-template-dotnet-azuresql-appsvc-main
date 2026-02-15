@@ -120,12 +120,12 @@
 
 ### Implementation
 
-- [ ] T064 [P] [US3] Create CI triage tool skeleton in `scripts\ci-triage\package.json` and `scripts\ci-triage\src\index.ts`
-- [ ] T065 [US3] Implement Copilot SDK adapter (read-only prompt) in `scripts\ci-triage\src\copilot.ts`
-- [ ] T066 [US3] Implement log/artifact summarization in `scripts\ci-triage\src\summarize.ts`
-- [ ] T067 [US3] Add CI failure triage workflow in `.github\workflows\ci-triage.yml` (runs on `workflow_run` failure)
-- [ ] T068 [US3] Add explicit opt-in inputs for write actions in `.github\workflows\ci-triage.yml` (default false)
-- [ ] T069 [US3] Add low-risk remediation “proposal only” output in `scripts\ci-triage\src\remediate.ts`
+- [X] T064 [P] [US3] Create CI triage tool skeleton in `scripts\ci-triage\package.json` and `scripts\ci-triage\src\index.ts`
+- [X] T065 [US3] Implement Copilot SDK adapter (read-only prompt) in `scripts\ci-triage\src\copilot.ts`
+- [X] T066 [US3] Implement log/artifact summarization in `scripts\ci-triage\src\summarize.ts`
+- [X] T067 [US3] Add CI failure triage workflow in `.github\workflows\ci-triage.yml` (runs on `workflow_run` failure)
+- [X] T068 [US3] Add explicit opt-in inputs for write actions in `.github\workflows\ci-triage.yml` (default false)
+- [X] T069 [US3] Add low-risk remediation “proposal only” output in `scripts\ci-triage\src\remediate.ts`
 
 **Checkpoint**: US3 produces actionable summaries without making unapproved changes.
 
@@ -139,15 +139,15 @@
 
 ### Implementation & Tests
 
-- [ ] T070 [P] [US4] Define standard error response shape in `backend\src\common\errors\error-response.ts`
-- [ ] T071 [US4] Map Prisma not-found/validation errors in `backend\src\common\filters\http-exception.filter.ts`
-- [ ] T072 [US4] Add transient retry/timeout behavior for DB calls in `backend\src\prisma\prisma.service.ts`
-- [ ] T073 [P] [US4] Add frontend NotFound page in `frontend\src\pages\NotFoundPage.tsx`
-- [ ] T074 [P] [US4] Add frontend Error Boundary in `frontend\src\app\ErrorBoundary.tsx`
-- [ ] T075 [US4] Add global notifications/toasts in `frontend\src\app\NotificationsProvider.tsx`
-- [ ] T076 [US4] Ensure Students form preserves state + shows actionable retry errors in `frontend\src\components\students\StudentForm.tsx`
-- [ ] T077 [P] [US4] Add backend error handling tests in `backend\test\error-handling.e2e-spec.ts`
-- [ ] T078 [P] [US4] Add Playwright error-state tests in `frontend\tests\e2e\error-states.spec.ts`
+- [X] T070 [P] [US4] Define standard error response shape in `backend\src\common\errors\error-response.ts`
+- [X] T071 [US4] Map Prisma not-found/validation errors in `backend\src\common\filters\http-exception.filter.ts`
+- [X] T072 [US4] Add transient retry/timeout behavior for DB calls in `backend\src\prisma\prisma.service.ts`
+- [X] T073 [P] [US4] Add frontend NotFound page in `frontend\src\pages\NotFoundPage.tsx`
+- [X] T074 [P] [US4] Add frontend Error Boundary in `frontend\src\app\ErrorBoundary.tsx`
+- [X] T075 [US4] Add global notifications/toasts in `frontend\src\app\NotificationsProvider.tsx`
+- [X] T076 [US4] Ensure Students form preserves state + shows actionable retry errors in `frontend\src\components\students\StudentForm.tsx`
+- [X] T077 [P] [US4] Add backend error handling tests in `backend\test\error-handling.e2e-spec.ts`
+- [X] T078 [P] [US4] Add Playwright error-state tests in `frontend\tests\e2e\error-states.spec.ts`
 
 **Checkpoint**: Failures are consistent and user-friendly; retry is possible without losing context.
 
