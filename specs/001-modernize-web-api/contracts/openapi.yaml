@@ -2,6 +2,8 @@ openapi: 3.0.3
 info:
   title: Contoso University API (Modernized)
   version: 0.1.0
+  license:
+    name: UNLICENSED
   description: |
     Target API surface for the Node.js backend while preserving existing Contoso University semantics.
 servers:
@@ -9,6 +11,10 @@ servers:
     variables:
       host:
         default: localhost:3000
+
+# Public API for demo; no auth configured yet.
+security: []
+
 paths:
   /api/students:
     get:
@@ -215,20 +221,19 @@ components:
         enrollmentDate: { type: string, format: date-time }
     StudentUpdate:
       type: object
-      required: [firstName, lastName, enrollmentDate]
       properties:
         firstName: { type: string, minLength: 1 }
         lastName: { type: string, minLength: 1 }
         enrollmentDate: { type: string, format: date-time }
     PagedStudents:
       type: object
-      required: [students, count, pages, currentPage]
+      required: [page, pageSize, totalCount, items]
       properties:
-        students:
+        page: { type: integer }
+        pageSize: { type: integer }
+        totalCount: { type: integer }
+        items:
           $ref: '#/components/schemas/Students'
-        count: { type: integer }
-        pages: { type: integer }
-        currentPage: { type: integer }
     Students:
       type: array
       items:

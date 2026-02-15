@@ -5,6 +5,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import configuration from './config/configuration';
 import { envValidationSchema } from './config/env.validation';
+import { CoursesModule } from './courses/courses.module';
 import { DbModule } from './db/db.module';
 import { HealthModule } from './health/health.module';
 import { StudentsModule } from './students/students.module';
@@ -19,6 +20,7 @@ import { StudentsModule } from './students/students.module';
     DbModule,
     HealthModule,
     StudentsModule,
+    CoursesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

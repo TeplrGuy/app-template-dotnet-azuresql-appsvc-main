@@ -8,6 +8,16 @@ permissions:
   contents: read
 
 jobs:
+  openapi-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Lint OpenAPI contract
+        run: npx -y @redocly/cli@latest lint specs/001-modernize-web-api/contracts/openapi.yaml
+
   backend:
     runs-on: ubuntu-latest
     defaults:

@@ -38,6 +38,14 @@ export default function App() {
             >
               Students
             </Button>
+            <Button
+              color="inherit"
+              component={RouterLink}
+              to="/courses"
+              aria-label="Courses"
+            >
+              Courses
+            </Button>
           </Stack>
         </Toolbar>
       </AppBar>

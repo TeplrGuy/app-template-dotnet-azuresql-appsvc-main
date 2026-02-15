@@ -41,6 +41,7 @@ npm run dev
 ```powershell
 cd backend
 npm test
+npm run test:e2e
 ```
 
 ## Frontend (planned)

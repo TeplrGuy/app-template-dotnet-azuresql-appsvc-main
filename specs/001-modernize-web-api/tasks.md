@@ -157,12 +157,12 @@
 
 **Purpose**: Improvements that affect multiple stories (docs, parity expansion, performance baselines).
 
-- [ ] T079 [P] Align `specs\001-modernize-web-api\contracts\openapi.yaml` with implemented endpoints (update contract file)
-- [ ] T080 [P] Add contract validation step in `.github\workflows\ci-build-test.yml` (lint/validate OpenAPI)
-- [ ] T081 Implement basic Courses read API in `backend\src\courses\courses.controller.ts` and `backend\src\courses\courses.service.ts`
-- [ ] T082 Implement Courses list page in `frontend\src\pages\courses\CoursesListPage.tsx`
-- [ ] T083 [P] Add Playwright smoke coverage for Courses list in `frontend\tests\e2e\smoke.spec.ts`
-- [ ] T084 Run and validate `specs\001-modernize-web-api\quickstart.md` steps (update docs if any steps drift)
+- [X] T079 [P] Align `specs\001-modernize-web-api\contracts\openapi.yaml` with implemented endpoints (update contract file)
+- [X] T080 [P] Add contract validation step in `.github\workflows\ci-build-test.yml` (lint/validate OpenAPI)
+- [X] T081 Implement basic Courses read API in `backend\src\courses\courses.controller.ts` and `backend\src\courses\courses.service.ts`
+- [X] T082 Implement Courses list page in `frontend\src\pages\courses\CoursesListPage.tsx`
+- [X] T083 [P] Add Playwright smoke coverage for Courses list in `frontend\tests\e2e\smoke.spec.ts`
+- [X] T084 Run and validate `specs\001-modernize-web-api\quickstart.md` steps (update docs if any steps drift)
 
 ---
 
