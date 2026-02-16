@@ -52,18 +52,6 @@ variable "tags" {
   default     = {}
 }
 
-variable "sql_admin_login" {
-  description = "SQL Server administrator login name."
-  type        = string
-  default     = "sqladminuser"
-}
-
-variable "sql_admin_password" {
-  description = "SQL Server administrator password."
-  type        = string
-  sensitive   = true
-}
-
 variable "private_endpoint_subnet_id" {
   description = "Subnet ID for the SQL private endpoint."
   type        = string

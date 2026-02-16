@@ -89,6 +89,18 @@ jobs:
             --resource-group "${{ vars.TF_NAME_PREFIX }}-staging-rg" \
             --yes || echo "Old SQL server already deleted or not found"
 
+      - name: Check Azure policies on SQL servers
+        run: |
+          echo "=== Policy assignments affecting this subscription ==="
+          az policy assignment list --scope "/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}" \
+            --query "[?contains(displayName,'SQL') || contains(displayName,'sql') || contains(displayName,'database') || contains(displayName,'Database')].{name:displayName, enforcement:enforcementMode, id:id}" \
+            -o table 2>/dev/null || echo "Could not list policies"
+          echo ""
+          echo "=== All deny policies ==="
+          az policy assignment list --scope "/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}" \
+            --query "[?enforcementMode=='Default'].{name:displayName, id:id}" \
+            -o table 2>/dev/null | head -30 || echo "Could not list deny policies"
+
       - name: Terraform apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
@@ -96,7 +108,6 @@ jobs:
           ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          TF_VAR_sql_admin_password: ${{ secrets.SQL_ADMIN_PASSWORD }}
         run: |
           terraform apply -auto-approve \
             -var "name_prefix=${{ vars.TF_NAME_PREFIX }}" \

@@ -19,7 +19,7 @@ output "database_name" {
 }
 
 output "connection_string" {
-  description = "Prisma-compatible SQL Server connection string."
-  value       = "sqlserver://${azurerm_mssql_server.this.fully_qualified_domain_name}:1433;database=${azurerm_mssql_database.this.name};user=${var.sql_admin_login};password=${var.sql_admin_password};encrypt=true;trustServerCertificate=false"
+  description = "Prisma-compatible SQL Server connection string using AAD managed identity."
+  value       = "sqlserver://${azurerm_mssql_server.this.fully_qualified_domain_name}:1433;database=${azurerm_mssql_database.this.name};encrypt=true;trustServerCertificate=false;authentication=ActiveDirectoryManagedIdentity"
   sensitive   = true
 }

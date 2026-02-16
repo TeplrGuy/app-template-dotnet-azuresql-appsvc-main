@@ -4,18 +4,14 @@ resource "azurerm_mssql_server" "this" {
   location            = var.location
   version             = "12.0"
 
-  public_network_access_enabled = false
+  public_network_access_enabled = true
 
   azuread_administrator {
     login_username              = var.aad_admin_login
     object_id                   = var.aad_admin_object_id
     tenant_id                   = var.aad_admin_tenant_id
-    azuread_authentication_only = false
+    azuread_authentication_only = true
   }
-
-  # SQL admin credentials for application access (Prisma 6 doesn't support AAD tokens)
-  administrator_login          = var.sql_admin_login
-  administrator_login_password = var.sql_admin_password
 
   tags = var.tags
 }
