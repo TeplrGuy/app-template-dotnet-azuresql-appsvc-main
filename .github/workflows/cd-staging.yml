@@ -67,6 +67,28 @@ jobs:
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER || 'tfstate' }}" \
             -backend-config="key=staging.terraform.tfstate"
 
+      # One-time: remove old AAD-only SQL server from state so it can be recreated
+      # with SQL auth. Safe to leave — the rm is a no-op once the resource is gone.
+      - name: Remove old SQL server from state (one-time migration)
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform state rm module.sql.azurerm_mssql_server.this || echo "Resource not in state (already removed)"
+          terraform state rm module.sql.azurerm_mssql_database.this || echo "Database not in state"
+          terraform state rm module.sql.azurerm_mssql_firewall_rule.allow_azure || echo "Firewall rule not in state"
+          terraform state rm module.sql.azurerm_private_endpoint.sql || echo "Private endpoint not in state"
+
+      - name: Delete old SQL server in Azure (if exists)
+        run: |
+          az sql server delete \
+            --name "${{ vars.TF_NAME_PREFIX }}-staging-sql" \
+            --resource-group "${{ vars.TF_NAME_PREFIX }}-staging-rg" \
+            --yes || echo "Old SQL server already deleted or not found"
+
       - name: Terraform apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
@@ -81,8 +103,7 @@ jobs:
             -var "location=${{ vars.AZURE_LOCATION || 'eastus2' }}" \
             -var "aad_admin_login=${{ vars.AAD_ADMIN_LOGIN || 'sqladmin' }}" \
             -var "aad_admin_object_id=${{ vars.AAD_ADMIN_OBJECT_ID || '' }}" \
-            -var "tenant_id=${{ vars.AZURE_TENANT_ID }}" \
-            -replace="module.sql.azurerm_mssql_server.this"
+            -var "tenant_id=${{ vars.AZURE_TENANT_ID }}"
 
       - name: Read Terraform outputs
         id: tfout
