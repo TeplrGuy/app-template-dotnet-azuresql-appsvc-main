@@ -19,11 +19,12 @@ export interface CopilotAnalysis {
 export async function analyzeWithCopilot(
   context: string,
 ): Promise<CopilotAnalysis | null> {
-  // Attempt to use Copilot SDK if available
+  // Attempt to use Copilot SDK if available.
+  // The module name is assigned to a variable so TypeScript does not
+  // attempt to resolve it at compile time (TS2307).
   try {
-    // Dynamic import — the SDK may not be installed in all environments
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const sdk = await import('@github/copilot-sdk').catch(() => null);
+    const sdkModule: string = '@github/copilot-sdk';
+    const sdk = await import(/* webpackIgnore: true */ sdkModule).catch(() => null);
     if (!sdk) {
       return null; // SDK not available, caller should use fallback
     }

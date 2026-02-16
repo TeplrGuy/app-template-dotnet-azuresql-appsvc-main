@@ -1,19 +1,8 @@
 import { Alert, Snackbar } from '@mui/material';
-import { createContext, useCallback, useContext, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
-
-type Severity = 'success' | 'error' | 'warning' | 'info';
-interface NotificationContextValue {
-  notify: (message: string, severity?: Severity) => void;
-}
-
-const NotificationContext = createContext<NotificationContextValue>({
-  notify: () => {},
-});
-
-export function useNotification() {
-  return useContext(NotificationContext);
-}
+import { NotificationContext } from './NotificationContext';
+import type { Severity } from './NotificationContext';
 
 export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);

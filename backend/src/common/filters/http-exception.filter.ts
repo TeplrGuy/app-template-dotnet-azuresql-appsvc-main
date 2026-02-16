@@ -8,6 +8,12 @@ import {
 import type { Request, Response } from 'express';
 import type { ErrorResponse } from '../errors/error-response';
 
+interface ExceptionResponseObject {
+  message?: string;
+  error?: string;
+  details?: unknown;
+}
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost) {
@@ -24,18 +30,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       status = exception.getStatus();
       const exResponse = exception.getResponse();
-      message =
-        typeof exResponse === 'string'
-          ? exResponse
-          : ((exResponse as any).message ?? exception.message);
-      error =
-        typeof exResponse === 'object'
-          ? (exResponse as any).error
-          : undefined;
-      details =
-        typeof exResponse === 'object'
-          ? (exResponse as any).details
-          : undefined;
+      if (typeof exResponse === 'string') {
+        message = exResponse;
+      } else {
+        const objResponse = exResponse as ExceptionResponseObject;
+        message = objResponse.message ?? exception.message;
+        error = objResponse.error;
+        details = objResponse.details;
+      }
     } else if (this.isPrismaError(exception)) {
       const mapped = this.mapPrismaError(exception);
       status = mapped.status;

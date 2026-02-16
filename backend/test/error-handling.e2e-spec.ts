@@ -9,7 +9,9 @@ import {
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { App } from 'supertest/types';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
+import type { ErrorResponse } from '../src/common/errors/error-response';
 
 @Controller('test-errors')
 class TestErrorController {
@@ -43,7 +45,7 @@ class TestErrorController {
 class TestErrorModule {}
 
 describe('Error Handling (e2e)', () => {
-  let app: INestApplication;
+  let app: INestApplication<App>;
 
   beforeAll(async () => {
     const moduleFixture = await Test.createTestingModule({
@@ -66,7 +68,7 @@ describe('Error Handling (e2e)', () => {
     await request(app.getHttpServer())
       .get('/api/test-errors/not-found')
       .expect(404)
-      .expect(({ body }) => {
+      .expect(({ body }: { body: ErrorResponse }) => {
         expect(body.statusCode).toBe(404);
         expect(body.message).toBe('Not found');
       });
@@ -82,7 +84,7 @@ describe('Error Handling (e2e)', () => {
     await request(app.getHttpServer())
       .get('/api/test-errors/service-unavailable')
       .expect(503)
-      .expect(({ body }) => {
+      .expect(({ body }: { body: ErrorResponse }) => {
         expect(body.retryable).toBe(true);
       });
   });
@@ -91,7 +93,7 @@ describe('Error Handling (e2e)', () => {
     await request(app.getHttpServer())
       .get('/api/test-errors/prisma-not-found')
       .expect(404)
-      .expect(({ body }) => {
+      .expect(({ body }: { body: ErrorResponse }) => {
         expect(body.message).toBe('Record not found');
       });
   });
@@ -100,7 +102,7 @@ describe('Error Handling (e2e)', () => {
     await request(app.getHttpServer())
       .get('/api/test-errors/prisma-connection')
       .expect(503)
-      .expect(({ body }) => {
+      .expect(({ body }: { body: ErrorResponse }) => {
         expect(body.retryable).toBe(true);
       });
   });

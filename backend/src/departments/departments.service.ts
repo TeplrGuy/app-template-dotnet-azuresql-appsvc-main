@@ -10,7 +10,12 @@ export type DepartmentDto = {
 };
 
 const seededDepartments: DepartmentDto[] = [
-  { departmentId: 1, name: 'Computer Science', courseCount: 12, instructorCount: 2 },
+  {
+    departmentId: 1,
+    name: 'Computer Science',
+    courseCount: 12,
+    instructorCount: 2,
+  },
   { departmentId: 2, name: 'Mathematics', courseCount: 8, instructorCount: 2 },
   { departmentId: 3, name: 'Physics', courseCount: 6, instructorCount: 1 },
   { departmentId: 4, name: 'English', courseCount: 10, instructorCount: 1 },

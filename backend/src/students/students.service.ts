@@ -21,11 +21,46 @@ export type PagedStudentsDto = {
 };
 
 const seededStudents: StudentDto[] = [
-  { studentId: 1, firstName: 'Ada', lastName: 'Lovelace', enrollmentDate: '2024-01-15T00:00:00.000Z', email: 'ada.lovelace@contoso.edu', courseCount: 3 },
-  { studentId: 2, firstName: 'Alan', lastName: 'Turing', enrollmentDate: '2024-02-20T00:00:00.000Z', email: 'alan.turing@contoso.edu', courseCount: 2 },
-  { studentId: 3, firstName: 'Grace', lastName: 'Hopper', enrollmentDate: '2023-09-01T00:00:00.000Z', email: 'grace.hopper@contoso.edu', courseCount: 4 },
-  { studentId: 4, firstName: 'John', lastName: 'von Neumann', enrollmentDate: '2023-11-10T00:00:00.000Z', email: 'john.von neumann@contoso.edu', courseCount: 2 },
-  { studentId: 5, firstName: 'Marie', lastName: 'Curie', enrollmentDate: '2024-03-05T00:00:00.000Z', email: 'marie.curie@contoso.edu', courseCount: 1 },
+  {
+    studentId: 1,
+    firstName: 'Ada',
+    lastName: 'Lovelace',
+    enrollmentDate: '2024-01-15T00:00:00.000Z',
+    email: 'ada.lovelace@contoso.edu',
+    courseCount: 3,
+  },
+  {
+    studentId: 2,
+    firstName: 'Alan',
+    lastName: 'Turing',
+    enrollmentDate: '2024-02-20T00:00:00.000Z',
+    email: 'alan.turing@contoso.edu',
+    courseCount: 2,
+  },
+  {
+    studentId: 3,
+    firstName: 'Grace',
+    lastName: 'Hopper',
+    enrollmentDate: '2023-09-01T00:00:00.000Z',
+    email: 'grace.hopper@contoso.edu',
+    courseCount: 4,
+  },
+  {
+    studentId: 4,
+    firstName: 'John',
+    lastName: 'von Neumann',
+    enrollmentDate: '2023-11-10T00:00:00.000Z',
+    email: 'john.von neumann@contoso.edu',
+    courseCount: 2,
+  },
+  {
+    studentId: 5,
+    firstName: 'Marie',
+    lastName: 'Curie',
+    enrollmentDate: '2024-03-05T00:00:00.000Z',
+    email: 'marie.curie@contoso.edu',
+    courseCount: 1,
+  },
 ];
 
 @Injectable()

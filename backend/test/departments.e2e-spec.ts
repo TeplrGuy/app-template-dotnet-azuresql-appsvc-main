@@ -1,13 +1,14 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
+import { App } from 'supertest/types';
 
 import { AppModule } from '../src/app.module';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { DepartmentsService } from '../src/departments/departments.service';
 
 describe('Departments (e2e)', () => {
-  let app: INestApplication;
+  let app: INestApplication<App>;
 
   const departmentsService: Partial<DepartmentsService> = {
     list: jest.fn().mockResolvedValue([
