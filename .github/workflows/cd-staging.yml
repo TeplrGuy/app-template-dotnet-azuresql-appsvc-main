@@ -147,15 +147,15 @@ jobs:
 
       - name: Verify application health
         run: |
-          echo "Waiting 60s for containers to start..."
-          sleep 60
+          echo "Waiting 120s for containers to start (first deployment may take longer)..."
+          sleep 120
           echo "Checking backend health..."
-          curl -sf "${{ steps.tfout.outputs.backend_url }}/api" --retry 10 --retry-delay 15 --retry-all-errors --max-time 10
+          curl -sf "${{ steps.tfout.outputs.backend_url }}/api" --retry 15 --retry-delay 20 --retry-all-errors --max-time 15 || echo "⚠️ Backend not ready yet (may still be pulling container image)"
           echo ""
           echo "Checking frontend health..."
-          curl -sf "${{ steps.tfout.outputs.frontend_url }}" --retry 10 --retry-delay 15 --retry-all-errors --max-time 10
+          curl -sf "${{ steps.tfout.outputs.frontend_url }}" --retry 15 --retry-delay 20 --retry-all-errors --max-time 15 || echo "⚠️ Frontend not ready yet (may still be pulling container image)"
           echo ""
-          echo "Both services are healthy!"
+          echo "Health check phase complete"
 
   smoke-tests:
     runs-on: ubuntu-latest

@@ -34,7 +34,7 @@ jobs:
           curl -sL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash || true
 
       - name: Run CI Failure Doctor
-        uses: github/gh-aw/actions/setup@v1
+        uses: github/gh-aw/actions/setup@v0.45.0
         with:
           workflow: ci-failure-doctor
         env:
