@@ -35,7 +35,6 @@ resource "azurerm_linux_web_app" "backend" {
     WEBSITES_PORT                          = "3000"
     SQLSERVER_CONNECTION_STRING             = var.sql_connection_string
     APPLICATIONINSIGHTS_CONNECTION_STRING   = var.app_insights_connection_string
-    DOCKER_REGISTRY_SERVER_URL             = "https://${var.acr_login_server}"
   }
 
   tags = var.tags
@@ -64,8 +63,7 @@ resource "azurerm_linux_web_app" "frontend" {
   }
 
   app_settings = {
-    WEBSITES_PORT              = "80"
-    DOCKER_REGISTRY_SERVER_URL = "https://${var.acr_login_server}"
+    WEBSITES_PORT = "80"
   }
 
   tags = var.tags
