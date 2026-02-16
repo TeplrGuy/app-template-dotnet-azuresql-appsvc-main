@@ -81,7 +81,8 @@ jobs:
             -var "location=${{ vars.AZURE_LOCATION || 'eastus2' }}" \
             -var "aad_admin_login=${{ vars.AAD_ADMIN_LOGIN || 'sqladmin' }}" \
             -var "aad_admin_object_id=${{ vars.AAD_ADMIN_OBJECT_ID || '' }}" \
-            -var "tenant_id=${{ vars.AZURE_TENANT_ID }}"
+            -var "tenant_id=${{ vars.AZURE_TENANT_ID }}" \
+            -replace="module.sql.azurerm_mssql_server.this"
 
       - name: Read Terraform outputs
         id: tfout
