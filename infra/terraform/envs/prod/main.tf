@@ -99,6 +99,8 @@ module "sql" {
   aad_admin_object_id = var.aad_admin_object_id
   aad_admin_tenant_id = var.tenant_id != null ? var.tenant_id : ""
 
+  sql_admin_password = var.sql_admin_password
+
   private_endpoint_subnet_id = module.networking.private_endpoint_subnet_id
   sql_private_dns_zone_id    = module.networking.sql_private_dns_zone_id
 
