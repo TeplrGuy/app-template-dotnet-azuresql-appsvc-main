@@ -26,7 +26,7 @@ variable "frontend_app_name" {
 variable "sku_name" {
   description = "App Service Plan SKU name (e.g., B1, S1, P1v3)."
   type        = string
-  default     = "B1"
+  default     = "S1"
 }
 
 variable "always_on" {
