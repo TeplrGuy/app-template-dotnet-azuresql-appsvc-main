@@ -131,11 +131,27 @@ jobs:
           echo "frontend_url=https://$(terraform output -raw frontend_default_hostname)" >> $GITHUB_OUTPUT
           echo "resource_group=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
           echo "acr_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
+          echo "sql_server_fqdn=$(terraform output -raw sql_server_fqdn)" >> $GITHUB_OUTPUT
+          echo "sql_database_name=$(terraform output -raw sql_database_name)" >> $GITHUB_OUTPUT
 
-      # NOTE: SQL schema migration (prisma db push) and seeding run inside the
-      # backend container at startup via entrypoint.sh. This is required because
-      # the SQL server has public_network_access_enabled=false (Azure policy) and
-      # is only reachable via private endpoint from the VNet-integrated App Service.
+      - name: Grant backend managed identity SQL access
+        run: |
+          BACKEND_APP="${{ steps.tfout.outputs.backend_app }}"
+          SQL_SERVER="${{ steps.tfout.outputs.sql_server_fqdn }}"
+          SQL_DB="${{ steps.tfout.outputs.sql_database_name }}"
+          TOKEN=$(az account get-access-token --resource https://database.windows.net --query accessToken -o tsv)
+          sqlcmd -S "tcp:${SQL_SERVER},1433" -d "${SQL_DB}" --authentication-method=ActiveDirectoryAccessToken --access-token "${TOKEN}" -Q "
+            IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '${BACKEND_APP}')
+            BEGIN
+              CREATE USER [${BACKEND_APP}] FROM EXTERNAL PROVIDER;
+            END;
+            ALTER ROLE db_datareader ADD MEMBER [${BACKEND_APP}];
+            ALTER ROLE db_datawriter ADD MEMBER [${BACKEND_APP}];
+            ALTER ROLE db_ddladmin ADD MEMBER [${BACKEND_APP}];
+          " || echo "⚠️ SQL user provisioning failed (may need manual setup)"
+
+      # NOTE: prisma db push and seeding run inside the backend container at
+      # startup via entrypoint.sh (uses AAD managed identity from the VNet).
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
