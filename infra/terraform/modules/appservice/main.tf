@@ -73,14 +73,12 @@ resource "azurerm_linux_web_app" "frontend" {
 
 # AcrPull role assignments for managed identities
 resource "azurerm_role_assignment" "backend_acr_pull" {
-  count                = var.acr_id != "" ? 1 : 0
   scope                = var.acr_id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_linux_web_app.backend.identity[0].principal_id
 }
 
 resource "azurerm_role_assignment" "frontend_acr_pull" {
-  count                = var.acr_id != "" ? 1 : 0
   scope                = var.acr_id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_linux_web_app.frontend.identity[0].principal_id
