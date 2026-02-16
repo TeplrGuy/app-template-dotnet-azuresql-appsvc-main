@@ -4,7 +4,7 @@ resource "azurerm_mssql_server" "this" {
   location            = var.location
   version             = "12.0"
 
-  public_network_access_enabled = true
+  public_network_access_enabled = false
 
   azuread_administrator {
     login_username              = var.aad_admin_login
@@ -29,13 +29,6 @@ resource "azurerm_mssql_database" "this" {
   tags = var.tags
 }
 
-# Allow Azure services (App Service VNet integration routes through Azure backbone)
-resource "azurerm_mssql_firewall_rule" "allow_azure" {
-  name             = "AllowAzureServices"
-  server_id        = azurerm_mssql_server.this.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
-}
 
 # Private endpoint for SQL Server (VNet-integrated App Service uses this path)
 resource "azurerm_private_endpoint" "sql" {

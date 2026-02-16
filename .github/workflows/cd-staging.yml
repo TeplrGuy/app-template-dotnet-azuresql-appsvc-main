@@ -115,39 +115,11 @@ jobs:
           echo "frontend_url=https://$(terraform output -raw frontend_default_hostname)" >> $GITHUB_OUTPUT
           echo "resource_group=$(terraform output -raw resource_group_name)" >> $GITHUB_OUTPUT
           echo "acr_server=$(terraform output -raw acr_login_server)" >> $GITHUB_OUTPUT
-          echo "sql_server_fqdn=$(terraform output -raw sql_server_fqdn)" >> $GITHUB_OUTPUT
-          echo "sql_database_name=$(terraform output -raw sql_database_name)" >> $GITHUB_OUTPUT
-          echo "backend_principal_id=$(terraform output -raw backend_principal_id)" >> $GITHUB_OUTPUT
 
-      - name: Grant backend managed identity SQL access
-        run: |
-          BACKEND_APP="${{ steps.tfout.outputs.backend_app }}"
-          SQL_SERVER="${{ steps.tfout.outputs.sql_server_fqdn }}"
-          SQL_DB="${{ steps.tfout.outputs.sql_database_name }}"
-          # Get an access token for Azure SQL using the pipeline's OIDC identity
-          TOKEN=$(az account get-access-token --resource https://database.windows.net --query accessToken -o tsv)
-          # Create the managed identity user and grant permissions (idempotent)
-          sqlcmd -S "tcp:${SQL_SERVER},1433" -d "${SQL_DB}" --authentication-method=ActiveDirectoryAccessToken --access-token "${TOKEN}" -Q "
-            IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = '${BACKEND_APP}')
-            BEGIN
-              CREATE USER [${BACKEND_APP}] FROM EXTERNAL PROVIDER;
-            END;
-            ALTER ROLE db_datareader ADD MEMBER [${BACKEND_APP}];
-            ALTER ROLE db_datawriter ADD MEMBER [${BACKEND_APP}];
-            ALTER ROLE db_ddladmin ADD MEMBER [${BACKEND_APP}];
-          " || echo "⚠️ SQL user provisioning failed (may need manual setup)"
-
-      - name: Push Prisma schema to database
-        working-directory: ./backend
-        run: |
-          npm ci --ignore-scripts
-          npx prisma generate
-          SQL_SERVER="${{ steps.tfout.outputs.sql_server_fqdn }}"
-          SQL_DB="${{ steps.tfout.outputs.sql_database_name }}"
-          export SQLSERVER_CONNECTION_STRING="sqlserver://${SQL_SERVER}:1433;database=${SQL_DB};user=sqladminuser;password=${SQL_ADMIN_PASSWORD};encrypt=true;trustServerCertificate=false"
-          npx prisma db push --skip-generate --accept-data-loss || echo "⚠️ Schema push failed"
-        env:
-          SQL_ADMIN_PASSWORD: ${{ secrets.SQL_ADMIN_PASSWORD }}
+      # NOTE: SQL schema migration (prisma db push) and seeding run inside the
+      # backend container at startup via entrypoint.sh. This is required because
+      # the SQL server has public_network_access_enabled=false (Azure policy) and
+      # is only reachable via private endpoint from the VNet-integrated App Service.
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

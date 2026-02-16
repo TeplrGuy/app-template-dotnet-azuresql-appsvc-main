@@ -17,5 +17,7 @@ COPY package*.json ./
 COPY prisma ./prisma
 RUN npm ci --omit=dev --ignore-scripts && npx prisma generate
 COPY --from=build /app/dist ./dist
+COPY entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 EXPOSE 3000
-CMD ["node", "dist/main"]
+ENTRYPOINT ["/entrypoint.sh"]
