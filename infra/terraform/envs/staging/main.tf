@@ -155,3 +155,11 @@ output "frontend_default_hostname" {
 output "sql_server_fqdn" {
   value = module.sql.server_fqdn
 }
+
+output "sql_database_name" {
+  value = module.sql.database_name
+}
+
+output "backend_principal_id" {
+  value = module.appservice.backend_principal_id
+}

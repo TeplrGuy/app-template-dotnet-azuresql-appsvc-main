@@ -34,7 +34,9 @@
     "prisma": "^6.19.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "swagger-ui-express": "^5.0.1"
+    "swagger-ui-express": "^5.0.1",
+    "@azure/identity": "^4.0.0",
+    "@faker-js/faker": "^9.0.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
