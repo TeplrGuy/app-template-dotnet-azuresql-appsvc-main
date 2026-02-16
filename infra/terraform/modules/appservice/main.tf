@@ -27,6 +27,8 @@ resource "azurerm_linux_web_app" "backend" {
     always_on          = var.always_on
     vnet_route_all_enabled = true
 
+    container_registry_use_managed_identity = true
+
     application_stack {
       docker_registry_url = "https://${var.acr_login_server}"
       docker_image_name   = var.backend_image
@@ -69,6 +71,8 @@ resource "azurerm_linux_web_app" "frontend" {
 
   site_config {
     always_on = var.always_on
+
+    container_registry_use_managed_identity = true
 
     application_stack {
       docker_registry_url = "https://${var.acr_login_server}"
