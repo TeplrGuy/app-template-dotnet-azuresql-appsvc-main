@@ -51,3 +51,13 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "private_endpoint_subnet_id" {
+  description = "Subnet ID for the SQL private endpoint."
+  type        = string
+}
+
+variable "sql_private_dns_zone_id" {
+  description = "Private DNS zone ID for SQL Server private link."
+  type        = string
+}

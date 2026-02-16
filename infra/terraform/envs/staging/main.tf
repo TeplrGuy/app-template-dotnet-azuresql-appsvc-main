@@ -49,6 +49,7 @@ locals {
 
   log_analytics_name = "${var.name_prefix}-staging-law"
   app_insights_name  = "${var.name_prefix}-staging-appi"
+  vnet_name          = "${var.name_prefix}-staging-vnet"
 }
 
 resource "azurerm_resource_group" "main" {
@@ -63,6 +64,15 @@ module "acr" {
   name                = local.acr_name
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
+  tags                = local.tags
+}
+
+module "networking" {
+  source = "../../modules/networking"
+
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  vnet_name           = local.vnet_name
   tags                = local.tags
 }
 
@@ -88,6 +98,9 @@ module "sql" {
   aad_admin_object_id = var.aad_admin_object_id
   aad_admin_tenant_id = var.tenant_id != null ? var.tenant_id : ""
 
+  private_endpoint_subnet_id = module.networking.private_endpoint_subnet_id
+  sql_private_dns_zone_id    = module.networking.sql_private_dns_zone_id
+
   tags = local.tags
 }
 
@@ -106,6 +119,9 @@ module "appservice" {
 
   sql_connection_string          = module.sql.connection_string
   app_insights_connection_string = module.monitoring.application_insights_connection_string
+
+  app_integration_subnet_id  = module.networking.app_integration_subnet_id
+  log_analytics_workspace_id = module.monitoring.log_analytics_workspace_id
 
   tags = local.tags
 }

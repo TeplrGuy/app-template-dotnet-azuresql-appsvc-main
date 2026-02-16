@@ -77,3 +77,13 @@ variable "acr_id" {
   type        = string
   default     = ""
 }
+
+variable "app_integration_subnet_id" {
+  description = "Subnet ID for App Service VNet integration (backend)."
+  type        = string
+}
+
+variable "log_analytics_workspace_id" {
+  description = "Log Analytics workspace ID for diagnostic settings."
+  type        = string
+}
