@@ -88,6 +88,11 @@ jobs:
             --name "${{ vars.TF_NAME_PREFIX }}-staging-sql" \
             --resource-group "${{ vars.TF_NAME_PREFIX }}-staging-rg" \
             --yes || echo "Old SQL server already deleted or not found"
+          # Also clean up orphaned private endpoint
+          az network private-endpoint delete \
+            --name "${{ vars.TF_NAME_PREFIX }}-staging-sql-pe" \
+            --resource-group "${{ vars.TF_NAME_PREFIX }}-staging-rg" \
+            || echo "Private endpoint already deleted or not found"
 
       - name: Check Azure policies on SQL servers
         run: |
