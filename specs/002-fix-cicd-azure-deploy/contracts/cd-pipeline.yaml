@@ -1,0 +1,122 @@
+# CD Pipeline Interface Contract
+# Defines the interface for staging and production deployment workflows
+
+name: cd-pipeline-contract
+version: "1.0"
+
+# --- Workflow Inputs ---
+inputs:
+  image_tag:
+    type: string
+    required: false
+    default: "${{ github.sha }}"
+    description: "Container image tag to deploy"
+
+# --- Required Repository Variables ---
+required_variables:
+  - name: AZURE_CLIENT_ID
+    description: "Azure AD application client ID for OIDC auth"
+    required: true
+  - name: AZURE_TENANT_ID
+    description: "Azure AD tenant ID"
+    required: true
+  - name: AZURE_SUBSCRIPTION_ID
+    description: "Azure subscription ID"
+    required: true
+  - name: TF_NAME_PREFIX
+    description: "Name prefix for Azure resources (globally unique)"
+    required: true
+
+optional_variables:
+  - name: TF_STATE_RESOURCE_GROUP
+    description: "Resource group for Terraform state storage"
+    default: "{TF_NAME_PREFIX}-tfstate-rg"
+  - name: TF_STATE_STORAGE_ACCOUNT
+    description: "Storage account for Terraform state"
+    default: "{TF_NAME_PREFIX}tfstate"
+  - name: TF_STATE_CONTAINER
+    description: "Blob container for state files"
+    default: "tfstate"
+  - name: AAD_ADMIN_LOGIN
+    description: "AAD admin display name for SQL Server"
+    default: "sqladmin"
+  - name: AAD_ADMIN_OBJECT_ID
+    description: "AAD admin object ID for SQL Server"
+    default: ""
+  - name: AZURE_LOCATION
+    description: "Azure region"
+    default: "eastus2"
+  - name: DAST_ENABLED
+    description: "Enable OWASP ZAP DAST scan"
+    default: "false"
+
+# --- Required GitHub Environments ---
+environments:
+  staging:
+    name: "staging"
+    protection_rules: []
+  production:
+    name: "production"
+    protection_rules:
+      - type: required_reviewers
+        description: "Optional manual approval gate before production deployment"
+
+# --- Required Permissions ---
+permissions:
+  contents: read
+  id-token: write  # For OIDC
+
+# --- Pipeline Stages ---
+stages:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - validate_required_vars
+      - azure_login_oidc
+      - terraform_init
+      - terraform_apply
+      - read_terraform_outputs
+      - deploy_backend_container
+      - deploy_frontend_container
+      - wait_and_health_check
+    outputs:
+      - backend_url
+      - frontend_url
+      - backend_app
+      - frontend_app
+      - resource_group
+      - acr_server
+
+  smoke_tests:
+    runs_on: ubuntu-latest
+    needs: [deploy]
+    steps:
+      - install_playwright
+      - run_smoke_tests
+
+  dast:
+    runs_on: ubuntu-latest
+    needs: [deploy, smoke_tests]
+    condition: "vars.DAST_ENABLED == 'true'"
+    steps:
+      - owasp_zap_baseline_scan
+
+# --- Health Check Contract ---
+health_checks:
+  backend:
+    endpoint: "/api"
+    method: GET
+    expected_status: 200
+    retries: 5
+    retry_delay_seconds: 10
+  frontend:
+    endpoint: "/health"
+    method: GET
+    expected_status: 200
+    retries: 5
+    retry_delay_seconds: 10
+
+# --- Terraform State Keys ---
+state_keys:
+  staging: "staging.terraform.tfstate"
+  production: "prod.terraform.tfstate"

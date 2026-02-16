@@ -121,14 +121,15 @@ jobs:
             --name "${{ steps.tfout.outputs.frontend_app }}" \
             --resource-group "${{ steps.tfout.outputs.resource_group }}"
 
-      - name: Wait for apps to start
+      - name: Verify application health
         run: |
           echo "Waiting 30s for containers to start..."
           sleep 30
           echo "Checking backend health..."
-          curl -sf "${{ steps.tfout.outputs.backend_url }}/api" --retry 5 --retry-delay 10 || echo "Backend not ready yet"
+          curl -sf "${{ steps.tfout.outputs.backend_url }}/api" --retry 5 --retry-delay 10
           echo "Checking frontend health..."
-          curl -sf "${{ steps.tfout.outputs.frontend_url }}/health" --retry 5 --retry-delay 10 || echo "Frontend not ready yet"
+          curl -sf "${{ steps.tfout.outputs.frontend_url }}/health" --retry 5 --retry-delay 10
+          echo "Both services are healthy!"
 
   smoke-tests:
     runs-on: ubuntu-latest

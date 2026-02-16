@@ -60,4 +60,31 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Manual triage not triggered in this run"
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install triage tool
+        working-directory: scripts/ci-triage
+        run: npm ci --ignore-scripts || npm install --ignore-scripts
+
+      - name: Build triage tool
+        working-directory: scripts/ci-triage
+        run: npx tsc
+
+      - name: Run CI triage (manual)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ inputs.run-id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ENABLE_REMEDIATION: ${{ inputs.enable-remediation || 'false' }}
+        working-directory: scripts/ci-triage
+        run: node dist/index.js | tee triage-output.md
+
+      - name: Upload triage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-triage-report
+          path: scripts/ci-triage/triage-output.md

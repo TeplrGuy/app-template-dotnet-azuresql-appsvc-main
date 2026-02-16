@@ -1,3 +1,12 @@
+# DEPRECATED: This is a legacy root module file.
+# This file is kept for backward compatibility but should not be used directly.
+# 
+# Use the environment-specific Terraform root modules instead:
+#   - infra/terraform/envs/staging/ for staging deployments
+#   - infra/terraform/envs/prod/     for production deployments
+#
+# These environment compositions properly instantiate and configure all child modules.
+
 terraform {
   required_version = ">= 1.5.0"
 
