@@ -67,45 +67,6 @@ jobs:
             -backend-config="container_name=${{ vars.TF_STATE_CONTAINER || 'tfstate' }}" \
             -backend-config="key=staging.terraform.tfstate"
 
-      # One-time: remove old AAD-only SQL server from state so it can be recreated
-      # with SQL auth. Safe to leave — the rm is a no-op once the resource is gone.
-      - name: Remove old SQL server from state (one-time migration)
-        working-directory: ${{ env.TF_WORKING_DIR }}
-        env:
-          ARM_USE_OIDC: true
-          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
-          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
-          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-        run: |
-          terraform state rm module.sql.azurerm_mssql_server.this || echo "Resource not in state (already removed)"
-          terraform state rm module.sql.azurerm_mssql_database.this || echo "Database not in state"
-          terraform state rm module.sql.azurerm_mssql_firewall_rule.allow_azure || echo "Firewall rule not in state"
-          terraform state rm module.sql.azurerm_private_endpoint.sql || echo "Private endpoint not in state"
-
-      - name: Delete old SQL server in Azure (if exists)
-        run: |
-          az sql server delete \
-            --name "${{ vars.TF_NAME_PREFIX }}-staging-sql" \
-            --resource-group "${{ vars.TF_NAME_PREFIX }}-staging-rg" \
-            --yes || echo "Old SQL server already deleted or not found"
-          # Also clean up orphaned private endpoint
-          az network private-endpoint delete \
-            --name "${{ vars.TF_NAME_PREFIX }}-staging-sql-pe" \
-            --resource-group "${{ vars.TF_NAME_PREFIX }}-staging-rg" \
-            || echo "Private endpoint already deleted or not found"
-
-      - name: Check Azure policies on SQL servers
-        run: |
-          echo "=== Policy assignments affecting this subscription ==="
-          az policy assignment list --scope "/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}" \
-            --query "[?contains(displayName,'SQL') || contains(displayName,'sql') || contains(displayName,'database') || contains(displayName,'Database')].{name:displayName, enforcement:enforcementMode, id:id}" \
-            -o table 2>/dev/null || echo "Could not list policies"
-          echo ""
-          echo "=== All deny policies ==="
-          az policy assignment list --scope "/subscriptions/${{ vars.AZURE_SUBSCRIPTION_ID }}" \
-            --query "[?enforcementMode=='Default'].{name:displayName, id:id}" \
-            -o table 2>/dev/null | head -30 || echo "Could not list deny policies"
-
       - name: Terraform apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         env:
@@ -121,9 +82,22 @@ jobs:
             -var "aad_admin_object_id=${{ vars.AAD_ADMIN_OBJECT_ID || '' }}" \
             -var "tenant_id=${{ vars.AZURE_TENANT_ID }}"
 
+      # Re-authenticate — OIDC tokens have a 5-min lifetime and TF apply can exceed it
+      - name: Azure login (OIDC) - refresh
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
       - name: Read Terraform outputs
         id: tfout
         working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          ARM_USE_OIDC: true
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
         run: |
           echo "backend_app=$(terraform output -raw backend_app_name)" >> $GITHUB_OUTPUT
           echo "frontend_app=$(terraform output -raw frontend_app_name)" >> $GITHUB_OUTPUT
